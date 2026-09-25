@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+spec/vendor/
+spec/generated/
+spec/states/
+spec/.tlc-state-count.json
+spec/*.log
+spec/*_TTrace_*.tla
+spec/*_TTrace_*.bin
