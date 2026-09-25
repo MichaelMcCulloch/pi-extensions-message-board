@@ -31,6 +31,8 @@ export interface BoardModelConfig {
   readonly posts: readonly PostId[];
   readonly topics: readonly string[];
   readonly mailboxCapacity: number;
+  /** TLA+ MaxClock; by default every configured message can be sent once. */
+  readonly maxClock?: number;
 }
 
 /** The verification target: two agents, one named mailbox, two messages. */
@@ -169,7 +171,8 @@ export const guards = {
   send: (state: AbstractBoardState, config: BoardModelConfig, agent: AgentId, box: BoxId, message: MessageId): boolean =>
     state.registered[agent] === true &&
     (state.mstatus[message] ?? "absent") === "absent" &&
-    (state.mailbox[box]?.length ?? 0) < config.mailboxCapacity,
+    (state.mailbox[box]?.length ?? 0) + ((state.lease[box] ?? null) !== null ? 1 : 0) < config.mailboxCapacity &&
+    state.clock < (config.maxClock ?? config.messages.length),
 
   recv: (state: AbstractBoardState, agent: AgentId, box: BoxId, message: MessageId): boolean =>
     state.registered[agent] === true &&
@@ -253,6 +256,9 @@ export function referenceReduceBoardState(
         recipient: set(state.recipient, event.message, event.box),
         sentAt: set(state.sentAt, event.message, clock),
         mailbox: set(state.mailbox, event.box, [...(state.mailbox[event.box] ?? []), event.message]),
+        // Materialize the Init defaults when the live instance admits a new box.
+        owner: state.owner[event.box] === undefined ? set(state.owner, event.box, null) : state.owner,
+        lease: state.lease[event.box] === undefined ? set(state.lease, event.box, null) : state.lease,
       };
     }
     case "recv": {
@@ -362,6 +368,30 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
     out.push({ invariant, detail });
   };
 
+  // TypeOK: the state functions have exactly the configured domains and ranges.
+  const functionOK = <T>(record: Readonly<Record<string, T>>, domain: readonly string[], accepts: (value: T) => boolean): boolean =>
+    Object.keys(record).length === domain.length && domain.every((id) => Object.hasOwn(record, id) && accepts(record[id]!));
+  const option = (domain: readonly string[]) => (value: string | null): boolean => value === null || domain.includes(value);
+  const timestamp = (value: number): boolean => Number.isInteger(value) && value >= 0 && value <= (config.maxClock ?? config.messages.length);
+  const typed =
+    functionOK(state.registered, config.agents, (value) => typeof value === "boolean") &&
+    functionOK(state.bound, config.agents, option(config.boxes)) &&
+    functionOK(state.owner, config.boxes, option(config.agents)) &&
+    functionOK(state.sender, config.messages, option(config.agents)) &&
+    functionOK(state.origin, config.messages, option(config.agents)) &&
+    functionOK(state.recipient, config.messages, option(config.boxes)) &&
+    functionOK(state.sentAt, config.messages, timestamp) &&
+    functionOK(state.mstatus, config.messages, (value) => ["absent", "queued", "fetched", "acked"].includes(value)) &&
+    functionOK(state.mailbox, config.boxes, (queue) => queue.every((message) => config.messages.includes(message))) &&
+    functionOK(state.lease, config.boxes, option(config.messages)) &&
+    functionOK(state.pstatus, config.posts, (value) => ["absent", "posted"].includes(value)) &&
+    functionOK(state.author, config.posts, option(config.agents)) &&
+    functionOK(state.porigin, config.posts, option(config.agents)) &&
+    functionOK(state.parent, config.posts, option(config.posts)) &&
+    functionOK(state.topic, config.posts, option(config.topics)) &&
+    state.posted.every((post) => config.posts.includes(post)) && timestamp(state.clock);
+  if (!typed) push("TypeOK", "state function domain or range differs from the model");
+
   // Binding exclusivity: bound and owner are inverse maps.
   for (const agent of config.agents) {
     const box = state.bound[agent] ?? null;
@@ -382,9 +412,22 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
   for (const message of config.messages) placements.set(message, []);
   for (const box of config.boxes) {
     const queue = state.mailbox[box] ?? [];
-    if (queue.length > config.mailboxCapacity) push("Bounded", `${box} mailbox ${queue.length} > capacity`);
-    for (const message of queue) placements.get(message)?.push(`mailbox:${box}`);
     const lease = state.lease[box] ?? null;
+    // A leased message still occupies a slot until it is acked.
+    const slots = queue.length + (lease !== null ? 1 : 0);
+    if (slots > config.mailboxCapacity) push("Bounded", `${box} mailbox ${queue.length} + lease > capacity`);
+    for (const message of queue) {
+      placements.get(message)?.push(`mailbox:${box}`);
+      if (state.recipient[message] !== box) push("QueueRecipient", `${message} queued in a non-recipient mailbox`);
+      if (state.mstatus[message] !== "queued") push("Placement", `${message} in mailbox but not queued`);
+    }
+    if (lease !== null) {
+      if (state.mstatus[lease] !== "fetched") push("Placement", `${lease} leased but not fetched`);
+      if (queue.includes(lease)) push("LeaseNotInMailbox", `${lease} both leased and queued`);
+      if (queue.some((message) => state.sentAt[lease]! >= state.sentAt[message]!)) {
+        push("LeasePrecedes", `${lease} does not precede its mailbox`);
+      }
+    }
     if (lease != null) placements.get(lease)?.push(`lease:${box}`);
   }
   for (const message of config.messages) {
@@ -400,13 +443,16 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
         push("LeaseRecipient", `${message} leased by a non-recipient`);
       }
     }
+    if (status !== "absent" && state.sentAt[message]! > state.clock) {
+      push("SentAtLeClock", `${message} sent after the current clock`);
+    }
     if (status !== "absent" && state.sender[message] !== state.origin[message]) {
       push("Unforgeable", `${message} sender ${state.sender[message]} != origin ${state.origin[message]}`);
     }
     for (const box of config.boxes) {
       const q = state.mailbox[box] ?? [];
       for (let i = 0; i + 1 < q.length; i += 1) {
-        if ((state.sentAt[q[i]!] ?? 0) > (state.sentAt[q[i + 1]!] ?? 0)) {
+        if ((state.sentAt[q[i]!] ?? 0) >= (state.sentAt[q[i + 1]!] ?? 0)) {
           push("Fifo", `${box} mailbox out of send order`);
         }
       }
@@ -430,6 +476,10 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
     }
   });
   for (const post of config.posts) {
+    // PostsInv constrains parent pointers even for posts outside the log.
+    if (state.pstatus[post] !== "posted" && state.parent[post] !== null) {
+      push("ParentPosted", `${post} has a parent but is not posted`);
+    }
     if (state.pstatus[post] === "posted" && !seen.has(post)) push("BoardAppendOnly", `${post} posted but not in log`);
   }
   return out;
@@ -437,11 +487,16 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
 
 /** Names of every invariant checked above. */
 export const BOARD_INVARIANT_NAMES: readonly string[] = [
+  "TypeOK",
   "BindExclusive",
   "OwnerRegistered",
   "Bounded",
   "Placement",
   "LeaseRecipient",
+  "QueueRecipient",
+  "LeaseNotInMailbox",
+  "LeasePrecedes",
+  "SentAtLeClock",
   "Unforgeable",
   "Fifo",
   "BoardNoDuplicates",

@@ -78,6 +78,8 @@ export function boardConfigOf(state: BoardState, extra?: { box?: BoxId; topic?: 
     posts: Object.keys(state.pstatus),
     topics: [...topics],
     mailboxCapacity: MAILBOX_CAPACITY,
+    // The live instance admits fresh message IDs; use a clock bound independent of its current size.
+    maxClock: Number.MAX_SAFE_INTEGER,
   };
 }
 

@@ -9,3 +9,7 @@ spec/.tlc-state-count.json
 spec/*.log
 spec/*_TTrace_*.tla
 spec/*_TTrace_*.bin
+
+# TLAPS proof cache
+spec/.tlacache/
+spec/*.thy

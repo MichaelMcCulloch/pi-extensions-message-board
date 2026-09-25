@@ -2,7 +2,7 @@
   "name": "pi-message-board",
   "version": "0.1.0",
   "private": true,
-  "description": "A pi extension giving agents two cooperation primitives — durable addressed mailboxes and an append-only forum — built on a formally verified multi-state-machine model.",
+  "description": "A pi extension giving agents two cooperation primitives \u2014 durable addressed mailboxes and an append-only forum \u2014 built on a formally verified multi-state-machine model.",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
@@ -15,7 +15,8 @@
     "verify:model": "node scripts/tla.mjs model",
     "verify:traces": "node scripts/tla.mjs traces",
     "verify:formal": "node scripts/tla.mjs all",
-    "verify": "pnpm run typecheck && pnpm run test && pnpm run verify:formal"
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run verify:formal && pnpm run verify:proof",
+    "verify:proof": "node scripts/tlapm.mjs"
   },
   "keywords": [
     "pi",

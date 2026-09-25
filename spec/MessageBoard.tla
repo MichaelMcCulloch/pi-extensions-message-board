@@ -11,13 +11,12 @@
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
-CONSTANTS Cap, MaxClock
+CONSTANTS Agents, Boxes, Messages, Posts, Topics, Cap, MaxClock
 
-Agents   == {"a1", "a2"}
-Boxes    == {"bx1"}
-Messages == {"m1", "m2"}
-Posts    == {"p1", "p2"}
-Topics   == {"t1"}
+\* The "no value" sentinel of an option type. It must be FRESH: the inductive
+\* proof needs `None \notin Agents \cup Boxes \cup Messages \cup Posts \cup Topics`,
+\* otherwise `lea(m)` for `m = None` counts every unleased mailbox (and bindings,
+\* parents, topics, and owners become ambiguous).
 None     == "none"
 
 MStatus == {"absent", "queued", "fetched", "acked"}
@@ -33,6 +32,12 @@ vars == <<registered, bound, owner, sender, origin, recipient, sentAt, mstatus,
 Members(s) == {s[i] : i \in DOMAIN s}
 Occ(m) == {b \in Boxes : m \in Members(mailbox[b])}
 Lea(m) == {b \in Boxes : lease[b] = m}
+
+\* A message that has been fetched but not acked is on lease: it has left the
+\* mailbox queue but still occupies a mailbox slot until it is acked. Capacity
+\* must therefore count the lease as well as the queue, or a rollback/reclaim
+\* can push a mailbox past Cap.
+LeasedSlots(l) == IF l = None THEN 0 ELSE 1
 
 TypeOK ==
     /\ registered \in [Agents -> BOOLEAN]
@@ -79,7 +84,7 @@ Init ==
 GuardRegister(a) == ~registered[a]
 GuardBind(a, b) == registered[a] /\ bound[a] = None /\ owner[b] = None
 GuardUnbind(a) == registered[a] /\ bound[a] # None
-GuardSend(s, b, m) == registered[s] /\ mstatus[m] = "absent" /\ Len(mailbox[b]) < Cap /\ clock < MaxClock
+GuardSend(s, b, m) == registered[s] /\ mstatus[m] = "absent" /\ Len(mailbox[b]) + LeasedSlots(lease[b]) < Cap /\ clock < MaxClock
 GuardRecv(a, b, m) ==
     /\ registered[a] /\ bound[a] = b /\ owner[b] = a
     /\ lease[b] = None /\ Len(mailbox[b]) > 0 /\ Head(mailbox[b]) = m /\ mstatus[m] = "queued"
@@ -188,28 +193,66 @@ Next ==
 \* Safety
 \* ---------------------------------------------------------------------------
 
-Inv ==
-    /\ TypeOK
-    /\ \A a \in Agents: (bound[a] # None => owner[bound[a]] = a)
-    /\ \A b \in Boxes: (owner[b] # None => bound[owner[b]] = b /\ registered[owner[b]])
-    /\ \A m \in Messages:
+BoundConsistent ==
+    \A a \in Agents: (bound[a] # None => owner[bound[a]] = a)
+
+OwnerConsistent ==
+    \A b \in Boxes: (owner[b] # None => bound[owner[b]] = b /\ registered[owner[b]])
+
+MessageStatus ==
+    \A m \in Messages:
          /\ (mstatus[m] = "absent"  => Cardinality(Occ(m)) = 0 /\ Cardinality(Lea(m)) = 0)
          /\ (mstatus[m] = "queued"  => Cardinality(Occ(m)) = 1 /\ Cardinality(Lea(m)) = 0)
          /\ (mstatus[m] = "fetched" => Cardinality(Occ(m)) = 0 /\ Cardinality(Lea(m)) = 1)
          /\ (mstatus[m] = "acked"   => Cardinality(Occ(m)) = 0 /\ Cardinality(Lea(m)) = 0)
          /\ Cardinality(Occ(m)) + Cardinality(Lea(m)) <= 1
          /\ (mstatus[m] # "absent" => sender[m] = origin[m])
-    /\ \A b \in Boxes:
-         /\ Len(mailbox[b]) <= Cap
+
+MailboxInv ==
+    \A b \in Boxes:
+         /\ Len(mailbox[b]) + LeasedSlots(lease[b]) <= Cap
          /\ (lease[b] = None \/ (lease[b] \in Messages /\ mstatus[lease[b]] = "fetched" /\ recipient[lease[b]] = b))
+         \* Needed by Recv: moving the head to a lease preserves its recipient.
+         /\ \A i \in DOMAIN mailbox[b]: recipient[mailbox[b][i]] = b
          /\ \A i, j \in DOMAIN mailbox[b]: i < j => sentAt[mailbox[b][i]] < sentAt[mailbox[b][j]]
-    /\ \A p \in Posts:
+
+PostsInv ==
+    \A p \in Posts:
          /\ (pstatus[p] = "posted" => author[p] = porigin[p])
          /\ (parent[p] = None \/ (parent[p] \in Posts /\
                pstatus[parent[p]] = "posted" /\ topic[parent[p]] = topic[p] /\
                \E i, j \in DOMAIN posted: i < j /\ posted[i] = parent[p] /\ posted[j] = p))
-    /\ \A i, j \in DOMAIN posted: i # j => posted[i] # posted[j]
-    /\ \A p \in Posts: (pstatus[p] = "posted") <=> (p \in Members(posted))
+
+PostedDistinct ==
+    \A i, j \in DOMAIN posted: i # j => posted[i] # posted[j]
+
+PostedMembership ==
+    \A p \in Posts: (pstatus[p] = "posted") <=> (p \in Members(posted))
+
+\* ---------------------------------------------------------------------------
+\* Strengthenings required for induction (true in every reachable state, but not
+\* implied by the invariants above; discovered by the TLAPS proof).
+\* ---------------------------------------------------------------------------
+
+\* A message on lease has been removed from its mailbox, so a rollback or
+\* reclaim can put it back at the front without duplicating it.
+LeaseNotInMailbox ==
+    \A b \in Boxes: lease[b] # None => lease[b] \notin Members(mailbox[b])
+
+\* A message on lease arrived before every message still in its mailbox, so
+\* putting it back at the front keeps the mailbox sorted by sentAt.
+LeasePrecedes ==
+    \A b \in Boxes: lease[b] # None =>
+        \A i \in DOMAIN mailbox[b]: sentAt[lease[b]] < sentAt[mailbox[b][i]]
+
+\* Every message that left "absent" was sent at or before the current clock, so
+\* a fresh send (sentAt = clock + 1) belongs at the end of its mailbox.
+SentAtLeClock ==
+    \A m \in Messages: mstatus[m] # "absent" => sentAt[m] <= clock
+
+Inv == TypeOK /\ BoundConsistent /\ OwnerConsistent /\ MessageStatus
+       /\ MailboxInv /\ PostsInv /\ PostedDistinct /\ PostedMembership
+       /\ LeaseNotInMailbox /\ LeasePrecedes /\ SentAtLeClock
 
 \* ---------------------------------------------------------------------------
 \* Liveness

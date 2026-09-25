@@ -145,7 +145,18 @@ export function boardPath(cwd: string, board = "default"): string {
   return join(cwd, ".pi", "message-board", `${board}.json`);
 }
 
-/** Guard against an empty file being parsed as a board. */
+/** Initialize an empty board and restore implicit defaults from older snapshots. */
 export function ensureBoard(state: BoardState | null): BoardState {
-  return state ?? initBoardState();
+  if (state === null) return initBoardState();
+  // Older sends to an unbound name left these Init defaults implicit. Make
+  // them explicit before checking the same TypeOK invariant as the spec.
+  const boxes = Object.keys(state.mailbox);
+  const missingOwners = boxes.filter((box) => state.owner[box] === undefined);
+  const missingLeases = boxes.filter((box) => state.lease[box] === undefined);
+  if (missingOwners.length === 0 && missingLeases.length === 0) return state;
+  return {
+    ...state,
+    owner: { ...state.owner, ...Object.fromEntries(missingOwners.map((box) => [box, null])) },
+    lease: { ...state.lease, ...Object.fromEntries(missingLeases.map((box) => [box, null])) },
+  };
 }

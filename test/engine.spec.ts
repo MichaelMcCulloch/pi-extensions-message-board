@@ -33,6 +33,18 @@ describe("board store (named mailboxes)", () => {
     expect(board.violations()).toEqual([]);
   });
 
+  it("loads legacy unbound mailboxes with implicit owner and lease defaults", () => {
+    const original = memoryBoard();
+    original.register("a1");
+    original.send("a1", "inbox", "durable");
+    const board = memoryBoard({ ...original.state, owner: {}, lease: {} });
+    expect(board.violations()).toEqual([]);
+    board.register("a2");
+    board.bind("a2", "inbox");
+    expect(board.recv("a2", "inbox").message?.body).toBe("durable");
+    expect(board.violations()).toEqual([]);
+  });
+
   it("reclaims a lease and redelivers", () => {
     const board = memoryBoard();
     board.register("a1");
