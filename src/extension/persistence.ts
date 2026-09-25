@@ -145,18 +145,76 @@ export function boardPath(cwd: string, board = "default"): string {
   return join(cwd, ".pi", "message-board", `${board}.json`);
 }
 
-/** Initialize an empty board and restore implicit defaults from older snapshots. */
+/** Initialize an empty board and repair fields that older snapshots omitted. */
 export function ensureBoard(state: BoardState | null): BoardState {
   if (state === null) return initBoardState();
-  // Older sends to an unbound name left these Init defaults implicit. Make
-  // them explicit before checking the same TypeOK invariant as the spec.
-  const boxes = Object.keys(state.mailbox);
-  const missingOwners = boxes.filter((box) => state.owner[box] === undefined);
-  const missingLeases = boxes.filter((box) => state.lease[box] === undefined);
-  if (missingOwners.length === 0 && missingLeases.length === 0) return state;
+  const base = initBoardState();
+  // Snapshots written by older versions can omit whole fields (`owner` and
+  // `lease` did not exist before unbound sends were tracked), not just per-id
+  // entries. Rebuild every map from the ids the snapshot does carry, then fill
+  // the missing entries with the same defaults `initAbstractBoardState` uses.
+  const registered = { ...(state.registered ?? {}) };
+  const bound = { ...(state.bound ?? {}) };
+  const owner = { ...(state.owner ?? {}) };
+  const mailbox = { ...(state.mailbox ?? {}) };
+  const lease = { ...(state.lease ?? {}) };
+  const sender = { ...(state.sender ?? {}) };
+  const origin = { ...(state.origin ?? {}) };
+  const recipient = { ...(state.recipient ?? {}) };
+  const sentAt = { ...(state.sentAt ?? {}) };
+  const mstatus = { ...(state.mstatus ?? {}) };
+  const pstatus = { ...(state.pstatus ?? {}) };
+  const author = { ...(state.author ?? {}) };
+  const porigin = { ...(state.porigin ?? {}) };
+  const parent = { ...(state.parent ?? {}) };
+  const topic = { ...(state.topic ?? {}) };
+
+  for (const agent of new Set([...Object.keys(registered), ...Object.keys(bound)])) {
+    if (registered[agent] === undefined) registered[agent] = false;
+    if (bound[agent] === undefined) bound[agent] = null;
+  }
+  for (const box of new Set([...Object.keys(mailbox), ...Object.keys(owner), ...Object.keys(lease)])) {
+    if (mailbox[box] === undefined) mailbox[box] = [];
+    if (owner[box] === undefined) owner[box] = null;
+    if (lease[box] === undefined) lease[box] = null;
+  }
+  for (const message of new Set([...Object.keys(mstatus), ...Object.keys(sender), ...Object.keys(origin), ...Object.keys(recipient), ...Object.keys(sentAt)])) {
+    if (mstatus[message] === undefined) mstatus[message] = "absent";
+    if (sender[message] === undefined) sender[message] = null;
+    if (origin[message] === undefined) origin[message] = null;
+    if (recipient[message] === undefined) recipient[message] = null;
+    if (sentAt[message] === undefined) sentAt[message] = 0;
+  }
+  for (const post of new Set([...Object.keys(pstatus), ...Object.keys(author), ...Object.keys(porigin), ...Object.keys(parent), ...Object.keys(topic)])) {
+    if (pstatus[post] === undefined) pstatus[post] = "absent";
+    if (author[post] === undefined) author[post] = null;
+    if (porigin[post] === undefined) porigin[post] = null;
+    if (parent[post] === undefined) parent[post] = null;
+    if (topic[post] === undefined) topic[post] = null;
+  }
   return {
+    ...base,
     ...state,
-    owner: { ...state.owner, ...Object.fromEntries(missingOwners.map((box) => [box, null])) },
-    lease: { ...state.lease, ...Object.fromEntries(missingLeases.map((box) => [box, null])) },
+    registered,
+    bound,
+    owner,
+    mailbox,
+    lease,
+    sender,
+    origin,
+    recipient,
+    sentAt,
+    mstatus,
+    pstatus,
+    author,
+    porigin,
+    parent,
+    topic,
+    posted: state.posted ?? [],
+    clock: state.clock ?? 0,
+    revision: state.revision ?? 0,
+    bodies: state.bodies ?? {},
+    subjects: state.subjects ?? {},
+    postBodies: state.postBodies ?? {},
   };
 }
