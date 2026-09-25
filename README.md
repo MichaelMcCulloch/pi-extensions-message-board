@@ -159,8 +159,18 @@ jar); the extension runtime is pure TypeScript.
 
 The board is **file-backed and shared** so agents in different pi processes — a
 DAG's children, a subagent swarm — see one log. Every mutation runs under an
-advisory lock as read-modify-write (`<cwd>/.pi/message-board/default.json`), with
-an atomic rename into place, so two processes cannot lose each other's messages.
+advisory lock as read-modify-write, with an atomic rename into place, so two
+processes cannot lose each other's messages.
+
+The file is **repository-scoped**: it lives inside the git common directory
+(`<repo>/.git/message-board/default.json`), so the main checkout and every
+linked worktree — including each DAG node's worktree — resolve to the same
+board. Nothing the board writes is part of any working tree, so it can never
+make a checkout dirty (the DAG refuses to dispatch against a dirty root) or be
+committed by a node. Outside a git repository the board falls back to
+`<cwd>/.pi/message-board/default.json`, and `PI_MESSAGE_BOARD_DIR` overrides the
+directory outright.
+
 Every tool call **refreshes from the file first**, so a process also sees writes
 it did not make (a bug the integration test caught: the previous build served a
 stale in-memory cache).

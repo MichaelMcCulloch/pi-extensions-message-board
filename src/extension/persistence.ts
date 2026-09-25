@@ -19,7 +19,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
 import { initBoardState, type BoardState } from "../engine/board.ts";
 
 /** The durable backend the store mutates through. */
@@ -140,9 +141,47 @@ export class FileBoardBackend implements BoardBackend {
   }
 }
 
+/**
+ * The git common directory of `cwd`, or undefined when `cwd` is not in a git
+ * repository (or git is unavailable).
+ *
+ * `--git-common-dir` is the shared `.git` of every linked worktree. That is the
+ * anchor for a board shared by a repository's checkouts: the main worktree and
+ * each of the DAG's per-node worktrees resolve to the same directory, while
+ * nothing the board writes is part of any working tree (so it can never make a
+ * checkout dirty or be committed by a node).
+ */
+function gitCommonDirectory(cwd: string): string | undefined {
+  const run = (args: readonly string[]): string | undefined => {
+    try {
+      const out = execFileSync("git", ["-C", cwd, ...args], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return out.length > 0 ? out : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const absolute = run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (absolute !== undefined) return absolute;
+  // git < 2.31 has no --path-format; its output can be relative to cwd.
+  const relative = run(["rev-parse", "--git-common-dir"]);
+  return relative !== undefined ? resolve(cwd, relative) : undefined;
+}
+
+/** Where a repository's shared board lives: inside the git common directory. */
+export function boardDirectory(cwd: string): string {
+  if (process.env["PI_MESSAGE_BOARD_DIR"]) return process.env["PI_MESSAGE_BOARD_DIR"]!;
+  const common = gitCommonDirectory(cwd);
+  // Inside a repository every worktree shares `.git`; outside one, fall back to
+  // the working directory as before.
+  return common !== undefined ? join(common, "message-board") : join(cwd, ".pi", "message-board");
+}
+
 /** Where a shared board lives under a working directory. */
 export function boardPath(cwd: string, board = "default"): string {
-  return join(cwd, ".pi", "message-board", `${board}.json`);
+  return join(boardDirectory(cwd), `${board}.json`);
 }
 
 /** Initialize an empty board and repair fields that older snapshots omitted. */

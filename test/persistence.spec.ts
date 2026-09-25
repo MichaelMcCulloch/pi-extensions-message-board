@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,5 +70,48 @@ describe("file board backend", () => {
     });
     expect(next).toBe(8);
     expect(backend.read()?.revision).toBe(8);
+  });
+});
+
+describe("repository-scoped board location", () => {
+  function git(args: readonly string[], cwd: string): string {
+    return execFileSync("git", args, { cwd, encoding: "utf8" });
+  }
+
+  it("shares one board across linked worktrees without dirtying them", () => {
+    const root = dir();
+    git(["init", "-q", "-b", "main"], root);
+    git(["config", "user.email", "board@example.com"], root);
+    git(["config", "user.name", "board"], root);
+    writeFileSync(join(root, ".gitignore"), ".worktrees/\n", "utf8");
+    writeFileSync(join(root, "README.md"), "x\n", "utf8");
+    git(["add", "-A"], root);
+    git(["commit", "-qm", "init"], root);
+    const worktree = join(root, ".worktrees", "n1");
+    git(["worktree", "add", "-q", "-b", "dag/n1", worktree], root);
+
+    // The dispatcher (root) and a node agent (worktree cwd) see the same board.
+    expect(boardPath(worktree)).toBe(boardPath(root));
+    new FileBoardBackend(boardPath(root)).write(initBoardState());
+    expect(boardPath(root)).toContain(join(".git", "message-board"));
+    // The DAG refuses to run against a dirty root; the board lives inside .git,
+    // so it is invisible to `git status`.
+    expect(git(["status", "--porcelain", "--untracked-files=all"], root).trim()).toBe("");
+  });
+
+  it("falls back to the working directory outside a repository", () => {
+    const root = dir();
+    expect(boardPath(root)).toBe(join(root, ".pi", "message-board", "default.json"));
+  });
+
+  it("honours PI_MESSAGE_BOARD_DIR", () => {
+    const root = dir();
+    const override = dir();
+    process.env["PI_MESSAGE_BOARD_DIR"] = override;
+    try {
+      expect(boardPath(root)).toBe(join(override, "default.json"));
+    } finally {
+      delete process.env["PI_MESSAGE_BOARD_DIR"];
+    }
   });
 });
