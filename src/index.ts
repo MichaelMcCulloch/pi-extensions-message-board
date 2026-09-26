@@ -68,12 +68,13 @@ export default function boardExtension(pi: ExtensionAPI): void {
       return;
     }
     if (!widgetInstalled) {
-      ctx.ui.setWidget(WIDGET_KEY, (tui) => {
+      ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
         widgetTui = tui;
         return new BoardWidget(
           () => renderBoardWidget(getStore(ctx)),
           8,
           () => void openExplorer(currentCtx ?? ctx),
+          () => currentCtx?.ui.theme ?? theme,
         );
       });
       widgetInstalled = true;

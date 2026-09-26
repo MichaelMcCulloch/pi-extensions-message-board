@@ -40,7 +40,8 @@ describe("BoardWidget", () => {
   it("fits lines and caps with a hint", () => {
     const widget = new BoardWidget(() => ["one", "two", "three"], 1);
     const lines = widget.render(40);
-    expect(lines).toHaveLength(2);
+    // one kept + omission hint + separator
+    expect(lines).toHaveLength(3);
     for (const line of lines) expect(visibleWidth(line)).toBe(40);
     expect(lines[1]).toContain("+2 more");
   });
