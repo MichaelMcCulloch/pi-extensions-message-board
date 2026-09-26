@@ -47,7 +47,6 @@ interface BoardDetails {
   readonly action: string;
   readonly revision: number;
   readonly agent: string;
-  readonly error?: string;
   readonly board?: unknown;
   readonly message?: string;
   readonly post?: string;
@@ -88,10 +87,14 @@ export function buildBoardTool(
         };
       } catch (error) {
         if (error instanceof BoardOperationError) {
-          return {
-            content: [{ type: "text", text: `board ${params.action} refused: ${error.message}` }],
-            details: { action: params.action, revision: store.state.revision, agent, error: error.code },
-          };
+          // The agent runtime only marks a tool result as an error when
+          // `execute` throws; a refusal returned as ordinary content is
+          // reported to the model as success. Rethrow with the action and the
+          // stable code so the failure is visible and actionable.
+          throw new BoardOperationError(
+            error.code,
+            `board ${params.action} refused (${error.code}): ${error.message}`,
+          );
         }
         throw error;
       }

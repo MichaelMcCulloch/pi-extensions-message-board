@@ -52,10 +52,11 @@ describe("board tool", () => {
     expect(store.projection.posts[0]?.author).toBe("a9");
   });
 
-  it("returns a refusal instead of throwing", async () => {
+  it("surfaces a refusal as a thrown tool error so the agent sees the fault", async () => {
     const call = toolOn(memoryBoard());
-    const result = await call("a1", { action: "send", box: "inbox", body: "x" });
-    expect(result.details.error).toBe("board-unregistered");
+    // Returning the refusal as content would be recorded as a successful call
+    // (`isError: false`); throwing is the only way to signal failure.
+    await expect(call("a1", { action: "send", box: "inbox", body: "x" })).rejects.toThrow(/board-unregistered/);
   });
 
   it("reports whoami from the session", async () => {
