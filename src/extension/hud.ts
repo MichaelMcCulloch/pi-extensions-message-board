@@ -96,8 +96,7 @@ export class BoardWidget implements Component {
     const shown = body.slice(0, this.maxLines);
     if (body.length > this.maxLines) shown.push(`… +${body.length - this.maxLines} more — click to open`);
     const fitted = shown.map((line) => truncateToWidth(line, width, "…", true));
-    fitted.push(separator(width, this.getTheme?.()));
-    return fitted;
+    return [separator(width, this.getTheme?.()), ...fitted];
   }
 }
 
