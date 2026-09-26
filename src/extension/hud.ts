@@ -7,7 +7,7 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { BoardStore } from "./store.ts";
 
 /** A compact summary for the persistent widget. Empty when the board is unused. */
@@ -68,17 +68,26 @@ export class BoardWidget implements Component {
   public constructor(
     private readonly lines: () => string[],
     private readonly maxLines = 8,
+    private readonly onActivate?: () => void,
   ) {}
 
   public invalidate(): void {
     // Rendering re-reads the shared board each frame.
   }
 
+  public handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type === "click" && event.button === "left" && this.onActivate !== undefined) {
+      this.onActivate();
+      return { handled: true };
+    }
+    return undefined;
+  }
+
   public render(width: number): string[] {
     const body = this.lines();
     if (body.length === 0) return [];
     const shown = body.slice(0, this.maxLines);
-    if (body.length > this.maxLines) shown.push(`… +${body.length - this.maxLines} more — /board`);
+    if (body.length > this.maxLines) shown.push(`… +${body.length - this.maxLines} more — click to open`);
     return shown.map((line) => truncateToWidth(line, width, "…", true));
   }
 }

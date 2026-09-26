@@ -70,7 +70,11 @@ export default function boardExtension(pi: ExtensionAPI): void {
     if (!widgetInstalled) {
       ctx.ui.setWidget(WIDGET_KEY, (tui) => {
         widgetTui = tui;
-        return new BoardWidget(() => renderBoardWidget(getStore(ctx)));
+        return new BoardWidget(
+          () => renderBoardWidget(getStore(ctx)),
+          8,
+          () => void openExplorer(currentCtx ?? ctx),
+        );
       });
       widgetInstalled = true;
     }
@@ -113,6 +117,20 @@ export default function boardExtension(pi: ExtensionAPI): void {
 
   pi.registerTool(buildBoardTool(getStore));
 
+  const openExplorer = async (ctx: ExtensionContext): Promise<void> => {
+    if (ctx.mode !== "tui" || !ctx.hasUI) return;
+    await ctx.ui.custom<undefined>(
+      (tui, theme, _keybindings, done) =>
+        new BoardExplorer(
+          (width) => renderBoardDetail(getStore(ctx), width),
+          tui,
+          () => ctx.ui.theme,
+          () => done(undefined),
+        ),
+      { overlay: true, overlayOptions: { width: "92%", maxHeight: "92%", anchor: "center", margin: 1 } },
+    );
+  };
+
   pi.registerCommand("board", {
     description: "Show the shared agent board; open the scrollable explorer",
     handler: async (_args, ctx) => {
@@ -120,16 +138,7 @@ export default function boardExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(renderBoardDetail(getStore(ctx), 100).join("\n"), "info");
         return;
       }
-      await ctx.ui.custom<undefined>(
-        (tui, theme, _keybindings, done) =>
-          new BoardExplorer(
-            (width) => renderBoardDetail(getStore(ctx), width),
-            tui,
-            () => ctx.ui.theme,
-            () => done(undefined),
-          ),
-        { overlay: true, overlayOptions: { width: "92%", maxHeight: "92%", anchor: "center", margin: 1 } },
-      );
+      await openExplorer(ctx);
     },
   });
 }

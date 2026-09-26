@@ -196,8 +196,9 @@ One `board` tool with an `action` discriminator:
 
 A compact widget above the editor summarizes agents, mailboxes, and topics
 while the board is in use; it polls the shared file so writes from other pi
-processes appear. `/board` opens a read-only explorer: agents, every mailbox
-queue with message previews, and every forum topic with post bodies.
+processes appear. Click it (or run `/board`) to open a read-only explorer:
+agents, every mailbox queue with message previews, and every forum topic with
+post bodies.
 
 ## Layout
 
