@@ -1,10 +1,10 @@
 /**
- * The model-facing `board` tool (named-mailbox revision).
+ * The model-facing `board` tool (push revision).
  *
- * Identity is the pi session; a mailbox is a durable name an agent binds. This
- * separates delivery from a session lifetime: a later session can bind a name
- * and drain what a previous one left. `recv`/`ack` are POP3 fetch/commit;
- * `reclaim` revokes a lease (the runtime trigger for TTL expiry).
+ * Identity is the pi session; a mailbox is a durable name an agent binds.
+ * Messages are pushed into the recipient's context by the runtime, so the tool
+ * has no fetch/ack handshake: sending, watching topics, and reading are the
+ * surface. Posting in a topic subscribes the author automatically.
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -20,12 +20,9 @@ export const BOARD_TOOL_ACTIONS = [
   "bind",
   "unbind",
   "send",
-  "recv",
-  "ack",
-  "ack_all",
-  "rollback",
-  "reclaim",
   "inbox",
+  "subscribe",
+  "unsubscribe",
   "post",
   "read",
   "topics",
@@ -34,10 +31,9 @@ export const BOARD_TOOL_ACTIONS = [
 
 const BoardParams = Type.Object({
   action: StringEnum(BOARD_TOOL_ACTIONS),
-  box: Type.Optional(Type.String({ description: "Mailbox name to bind, send to, or read." })),
-  message: Type.Optional(Type.String({ description: "Message id to ack." })),
+  box: Type.Optional(Type.String({ description: "Mailbox name to bind or send to." })),
   body: Type.Optional(Type.String({ description: "Message or post body." })),
-  topic: Type.Optional(Type.String({ description: "Forum topic name." })),
+  topic: Type.Optional(Type.String({ description: "Forum topic to post in, read, watch, or stop watching." })),
   subject: Type.Optional(Type.String({ description: "Forum post subject." })),
   parent: Type.Optional(Type.String({ description: "Post id this post replies to." })),
   since: Type.Optional(Type.String({ description: "Read posts after this post id." })),
@@ -60,11 +56,12 @@ export function buildBoardTool(
     name: "board",
     label: "Board",
     description:
-      "Cooperate with other agents over a shared board. Direct: bind a named mailbox, send to a name, recv the head, ack (POP3 fetch/commit), rollback, reclaim. Broadcast: post to a forum topic, read a topic, list topics. Your identity is your session; you cannot post or send as another agent.",
+      "Cooperate with other agents over a shared board. Direct: bind a durable mailbox name, send to a name; messages are pushed into the recipient's context. Broadcast: post to a forum topic, read a topic, list topics; posting in a topic subscribes you to it, and each new post is pushed to subscribers. Your identity is your session; you cannot post or send as another agent.",
     promptSnippet: "board: message other agents directly or post to a shared forum",
     promptGuidelines: [
-      "Bind a durable mailbox name with action=bind, then action=send and action=recv/ack for addressed handoffs.",
-      "Use action=post/read for shared findings and questions that any agent may need, not just one recipient.",
+      "Bind a durable mailbox name with action=bind so other agents can send you messages; they arrive as push notifications and do not need to be fetched.",
+      "Use action=post/read for shared findings and questions that any agent may need, not just one recipient; posting subscribes you to that topic.",
+      "Use action=subscribe/unsubscribe to watch topics you have not posted in, or to stop notifications from ones you have.",
     ],
     parameters: BoardParams,
     executionMode: "sequential",
@@ -126,7 +123,6 @@ function runAction(
   params: {
     action: (typeof BOARD_TOOL_ACTIONS)[number];
     box?: string;
-    message?: string;
     body?: string;
     topic?: string;
     subject?: string;
@@ -143,7 +139,7 @@ function runAction(
     case "bind": {
       const box = requireParam(params.box, "box", "bind");
       store.bind(agent, box);
-      return { text: `${agent} now serves ${box}` };
+      return { text: `${agent} now serves ${box}; messages sent to it will be pushed` };
     }
     case "unbind":
       store.unbind(agent);
@@ -152,35 +148,21 @@ function runAction(
       const box = requireParam(params.box, "box", "send");
       const body = requireParam(params.body, "body", "send");
       const result = store.send(agent, box, body);
-      return { text: `queued ${result.message} to ${box}`, message: result.message };
-    }
-    case "recv": {
-      const result = store.recv(agent, params.box);
-      if (result.message === null) return { text: `mailbox empty (${result.reason ?? "empty"})` };
-      return { text: JSON.stringify(result.message), message: result.message.id };
-    }
-    case "ack": {
-      const box = requireParam(params.box, "box", "ack");
-      const message = requireParam(params.message, "message", "ack");
-      store.ack(agent, box, message);
-      return { text: `acked ${message}`, message };
-    }
-    case "ack_all":
-      store.ackAll(agent);
-      return { text: "acked every fetched message" };
-    case "rollback": {
-      const box = requireParam(params.box, "box", "rollback");
-      store.rollback(agent, box);
-      return { text: `fetch of ${box} rolled back; the message returns to the queue` };
-    }
-    case "reclaim": {
-      const box = requireParam(params.box, "box", "reclaim");
-      store.reclaim(box);
-      return { text: `lease on ${box} revoked` };
+      return { text: `queued ${result.message} to ${box}; it is pushed when the name is served`, message: result.message };
     }
     case "inbox": {
       const box = requireParam(params.box, "box", "inbox");
       return { text: JSON.stringify(store.inbox(box)) };
+    }
+    case "subscribe": {
+      const topic = requireParam(params.topic, "topic", "subscribe");
+      store.subscribe(agent, topic);
+      return { text: `${agent} now watches #${topic}` };
+    }
+    case "unsubscribe": {
+      const topic = requireParam(params.topic, "topic", "unsubscribe");
+      store.unsubscribe(agent, topic);
+      return { text: `${agent} stopped watching #${topic}` };
     }
     case "post": {
       const topic = requireParam(params.topic, "topic", "post");

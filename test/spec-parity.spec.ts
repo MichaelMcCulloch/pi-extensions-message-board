@@ -30,10 +30,10 @@ describe("TLA+ / TypeScript parity", () => {
       bind: "GuardBind",
       unbind: "GuardUnbind",
       send: "GuardSend",
-      recv: "GuardRecv",
-      ack: "GuardAck",
-      rollback: "GuardRollback",
-      reclaim: "GuardReclaim",
+      deliver: "GuardDeliver",
+      fail: "GuardFail",
+      subscribe: "GuardSubscribe",
+      unsubscribe: "GuardUnsubscribe",
       post: "GuardPost",
     };
     for (const action of BOARD_ACTIONS) {

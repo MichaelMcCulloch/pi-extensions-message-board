@@ -2,12 +2,12 @@
 /**
  * Inductive-proof driver (TLAPS / tlapm).
  *
- *   node scripts/tlapm.mjs        check spec/DagSystemProof.tla
+ *   node scripts/tlapm.mjs        check the archived ack-era proof
  *
- * Proves `Spec => []Inv` for EVERY value of `Nodes`, `Edges`, `Files`,
- * `MaxGen`, and `MaxDropped` -- the parameterized DagSystem, not the TLC
- * fixture. `spec/DagSystemProof.tla` establishes `Init => Inv` and that each
- * action preserves each invariant component; `PTL` turns that into `[]Inv`.
+ * The push revision of `MessageBoard.tla` is TLC-verified but has no TLAPS
+ * proof yet; the ack-era inductive proof is archived under spec/archive and is
+ * NOT part of `pnpm verify`. This driver exists so the re-derived proof can be
+ * checked the same way once it lands.
  *
  * The driver locates tlapm from `TLAPM`, then `~/.local/tlapm/bin/tlapm`,
  * then `PATH`, and its stdlib from `TLAPM_LIBRARY`, then the sibling lib
@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const specDir = resolve(root, "spec");
-const PROOF = "MessageBoardProof.tla";
+const PROOF = "archive/MessageBoardProof.ack-era.tla";
 
 function findTlapm() {
   const candidates = [

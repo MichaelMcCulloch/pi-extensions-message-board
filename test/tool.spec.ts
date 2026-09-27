@@ -14,42 +14,44 @@ function toolOn(store: ReturnType<typeof memoryBoard>) {
 }
 
 describe("board tool", () => {
-  it("binds, sends, fetches, and acks a named mailbox", async () => {
-    const call = toolOn(memoryBoard());
+  it("binds, sends, and queues the message for push delivery", async () => {
+    const store = memoryBoard();
+    const call = toolOn(store);
     await call("a1", { action: "register" });
     await call("a2", { action: "register" });
     await call("a2", { action: "bind", box: "inbox" });
 
     const sent = await call("a1", { action: "send", box: "inbox", body: "ping" });
     expect(sent.details.message).toBeDefined();
+    expect(store.pending("a2")[0]).toMatchObject({ from: "a1", body: "ping" });
 
-    const fetched = await call("a2", { action: "recv", box: "inbox" });
-    expect(fetched.content[0]?.type === "text" && fetched.content[0].text).toContain("ping");
-    const messageId = fetched.details.message!;
-    await call("a2", { action: "ack", box: "inbox", message: messageId });
     const inbox = await call("a2", { action: "inbox", box: "inbox" });
-    expect(inbox.content[0]?.type === "text" && inbox.content[0].text).toBe("[]");
+    expect(inbox.content[0]?.type === "text" && inbox.content[0].text).toContain("ping");
+
+    // The runtime injects and then commits; the tool never fetches.
+    store.deliver("a2", "inbox", sent.details.message!);
+    const after = await call("a2", { action: "inbox", box: "inbox" });
+    expect(after.content[0]?.type === "text" && after.content[0].text).toBe("[]");
   });
 
-  it("revokes a lease with reclaim", async () => {
-    const call = toolOn(memoryBoard());
+  it("subscribes and unsubscribes topics", async () => {
+    const store = memoryBoard();
+    const call = toolOn(store);
     await call("a1", { action: "register" });
-    await call("a2", { action: "register" });
-    await call("a2", { action: "bind", box: "inbox" });
-    await call("a1", { action: "send", box: "inbox", body: "ttl" });
-    await call("a2", { action: "recv", box: "inbox" });
-    const reclaimed = await call("a1", { action: "reclaim", box: "inbox" });
-    expect(reclaimed.content[0]?.type === "text" && reclaimed.content[0].text).toContain("revoked");
-    const again = await call("a2", { action: "recv", box: "inbox" });
-    expect(again.content[0]?.type === "text" && again.content[0].text).toContain("ttl");
+    const watched = await call("a1", { action: "subscribe", topic: "design" });
+    expect(watched.content[0]?.type === "text" && watched.content[0].text).toContain("#design");
+    expect(store.subscriptions("a1")).toEqual(["design"]);
+    await call("a1", { action: "unsubscribe", topic: "design" });
+    expect(store.subscriptions("a1")).toEqual([]);
   });
 
-  it("uses the session identity as the author", async () => {
+  it("posting subscribes the author and uses the session identity", async () => {
     const store = memoryBoard();
     const call = toolOn(store);
     await call("a9", { action: "register" });
     await call("a9", { action: "post", topic: "t", subject: "s", body: "b" });
     expect(store.projection.posts[0]?.author).toBe("a9");
+    expect(store.subscriptions("a9")).toEqual(["t"]);
   });
 
   it("surfaces a refusal as a thrown tool error so the agent sees the fault", async () => {

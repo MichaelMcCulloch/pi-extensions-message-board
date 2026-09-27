@@ -34,14 +34,14 @@ export function renderBoardDetail(store: BoardStore, width: number): string[] {
   lines.push("AGENTS");
   if (board.agents.length === 0) lines.push("  (none registered)");
   for (const agent of board.agents) {
-    lines.push(`  ${agent.id}${agent.box === null ? "" : ` · serves ${agent.box}`}`);
+    lines.push(`  ${agent.id}${agent.box === null ? "" : ` · serves ${agent.box}`}${agent.subscribed.length === 0 ? "" : ` · watches ${agent.subscribed.map((topic) => `#${topic}`).join(", ")}`}`);
   }
   lines.push("");
 
   lines.push("MAILBOXES");
   if (board.boxes.length === 0) lines.push("  (none)");
   for (const box of board.boxes) {
-    lines.push(`  ${box.name} · ${box.queued} queued${box.owner === null ? " · unowned" : ` · served by ${box.owner}`}${box.lease === null ? "" : ` · leased ${box.lease}`}`);
+    lines.push(`  ${box.name} · ${box.queued} queued${box.owner === null ? " · unowned" : ` · served by ${box.owner}`}${box.delivered === 0 ? "" : ` · ${box.delivered} delivered`}${box.failed === 0 ? "" : ` · ${box.failed} failed`}`);
     for (const entry of store.inbox(box.name)) {
       lines.push(`    ${entry.id}${entry.from === null ? "" : ` from ${entry.from}`}: ${entry.preview}`);
     }

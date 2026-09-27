@@ -1,26 +1,32 @@
 /**
- * The executable abstract model of the message board (named-mailbox revision).
+ * The executable abstract model of the message board (push revision).
  *
- * Mailboxes are now named (`BoxId`), and an agent *binds* a name to serve it.
- * This decouples delivery from a session id: a fresh session can bind a name and
- * drain a mailbox a previous session left behind. A lease can be *reclaimed*
- * (the runtime triggers this on TTL expiry), so a fetched-but-unacked message is
- * never stranded when its consumer dies.
+ * A message is queued and then either delivered or failed; both terminal
+ * states are absorbing. There is no lease and no ack: the runtime that injects
+ * a message commits the delivery, and failures (expiry, injection error) are
+ * reported to the sender. Mailboxes are named, an agent binds a name to serve
+ * it, and posting in a topic subscribes the author to that topic.
  *
- * Four machines:
+ * Six machines:
  *
- *   RegistryMachine  registered        which agents may act
- *   BindingMachine   bound, owner      the exclusive agent<->mailbox binding
- *   MailboxMachine   mailbox, lease    per-name FIFO queue and its single lease
- *   MessageMachine   mstatus           absent -> queued -> fetched -> acked
- *   ForumMachine     posted, ...       append-only threaded log
+ *   RegistryMachine       registered          which agents may act
+ *   BindingMachine        bound, owner        the exclusive agent<->name binding
+ *   MailboxMachine        mailbox             per-name FIFO queue
+ *   MessageMachine        mstatus             absent -> queued -> delivered | failed
+ *   SubscriptionMachine   subscribed          topic watch list, auto on post
+ *   ForumMachine          posted, ...         append-only threaded log
+ *
+ * An environment action (`fail`) has no acting agent: the runtime triggers it
+ * on expiry or when injection throws, exactly as the previous revision's
+ * `reclaim` was triggered outside the model.
  */
 
 export type AgentId = string;
 export type BoxId = string;
 export type MessageId = string;
 export type PostId = string;
-export type MessageStatus = "absent" | "queued" | "fetched" | "acked";
+export type TopicId = string;
+export type MessageStatus = "absent" | "queued" | "delivered" | "failed";
 export type PostStatus = "absent" | "posted";
 
 /** The finite bounds the reference model is checked under. */
@@ -29,7 +35,7 @@ export interface BoardModelConfig {
   readonly boxes: readonly BoxId[];
   readonly messages: readonly MessageId[];
   readonly posts: readonly PostId[];
-  readonly topics: readonly string[];
+  readonly topics: readonly TopicId[];
   readonly mailboxCapacity: number;
   /** TLA+ MaxClock; by default every configured message can be sent once. */
   readonly maxClock?: number;
@@ -57,13 +63,15 @@ export interface AbstractBoardState {
   readonly recipient: Readonly<Record<MessageId, BoxId | null>>;
   readonly sentAt: Readonly<Record<MessageId, number>>;
   readonly mstatus: Readonly<Record<MessageId, MessageStatus>>;
+  /** Undelivered messages, in send order. Delivered and failed are terminal. */
   readonly mailbox: Readonly<Record<BoxId, readonly MessageId[]>>;
-  readonly lease: Readonly<Record<BoxId, MessageId | null>>;
+  /** Topics each agent watches; posting in a topic subscribes the author. */
+  readonly subscribed: Readonly<Record<AgentId, readonly TopicId[]>>;
   readonly pstatus: Readonly<Record<PostId, PostStatus>>;
   readonly author: Readonly<Record<PostId, AgentId | null>>;
   readonly porigin: Readonly<Record<PostId, AgentId | null>>;
   readonly parent: Readonly<Record<PostId, PostId | null>>;
-  readonly topic: Readonly<Record<PostId, string | null>>;
+  readonly topic: Readonly<Record<PostId, TopicId | null>>;
   readonly posted: readonly PostId[];
   readonly clock: number;
 }
@@ -74,11 +82,17 @@ export type BoardEvent =
   | { readonly type: "bind"; readonly agent: AgentId; readonly box: BoxId }
   | { readonly type: "unbind"; readonly agent: AgentId }
   | { readonly type: "send"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
-  | { readonly type: "recv"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
-  | { readonly type: "ack"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
-  | { readonly type: "rollback"; readonly agent: AgentId; readonly box: BoxId }
-  | { readonly type: "reclaim"; readonly box: BoxId }
-  | { readonly type: "post"; readonly agent: AgentId; readonly post: PostId; readonly topic: string; readonly parent: PostId | null };
+  | { readonly type: "deliver"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
+  | { readonly type: "fail"; readonly box: BoxId; readonly message: MessageId }
+  | { readonly type: "subscribe"; readonly agent: AgentId; readonly topic: TopicId }
+  | { readonly type: "unsubscribe"; readonly agent: AgentId; readonly topic: TopicId }
+  | {
+      readonly type: "post";
+      readonly agent: AgentId;
+      readonly post: PostId;
+      readonly topic: TopicId;
+      readonly parent: PostId | null;
+    };
 
 export type BoardAction = BoardEvent["type"];
 
@@ -88,10 +102,10 @@ export const BOARD_ACTIONS: readonly BoardAction[] = [
   "bind",
   "unbind",
   "send",
-  "recv",
-  "ack",
-  "rollback",
-  "reclaim",
+  "deliver",
+  "fail",
+  "subscribe",
+  "unsubscribe",
   "post",
 ];
 
@@ -99,17 +113,17 @@ export const BOARD_ACTIONS: readonly BoardAction[] = [
 export function initAbstractBoardState(config: BoardModelConfig): AbstractBoardState {
   const registered: Record<AgentId, boolean> = {};
   const bound: Record<AgentId, BoxId | null> = {};
+  const subscribed: Record<AgentId, readonly TopicId[]> = {};
   for (const agent of config.agents) {
     registered[agent] = false;
     bound[agent] = null;
+    subscribed[agent] = [];
   }
   const owner: Record<BoxId, AgentId | null> = {};
   const mailbox: Record<BoxId, MessageId[]> = {};
-  const lease: Record<BoxId, MessageId | null> = {};
   for (const box of config.boxes) {
     owner[box] = null;
     mailbox[box] = [];
-    lease[box] = null;
   }
   const sender: Record<MessageId, AgentId | null> = {};
   const origin: Record<MessageId, AgentId | null> = {};
@@ -127,7 +141,7 @@ export function initAbstractBoardState(config: BoardModelConfig): AbstractBoardS
   const author: Record<PostId, AgentId | null> = {};
   const porigin: Record<PostId, AgentId | null> = {};
   const parent: Record<PostId, PostId | null> = {};
-  const topic: Record<PostId, string | null> = {};
+  const topic: Record<PostId, TopicId | null> = {};
   for (const post of config.posts) {
     pstatus[post] = "absent";
     author[post] = null;
@@ -137,7 +151,7 @@ export function initAbstractBoardState(config: BoardModelConfig): AbstractBoardS
   }
   return {
     registered, bound, owner, sender, origin, recipient, sentAt, mstatus,
-    mailbox, lease, pstatus, author, porigin, parent, topic, posted: [], clock: 0,
+    mailbox, subscribed, pstatus, author, porigin, parent, topic, posted: [], clock: 0,
   };
 }
 
@@ -156,6 +170,11 @@ function set<K extends string, V>(record: Readonly<Record<K, V>>, key: K, value:
   return { ...record, [key]: value };
 }
 
+/** Canonical set encoding: sorted, duplicate-free. Mirrors TLA+ `SUBSET Topics`. */
+function sortedUnique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
 /** The guards, one per action. */
 export const guards = {
   register: (state: AbstractBoardState, agent: AgentId): boolean => state.registered[agent] !== true,
@@ -171,33 +190,38 @@ export const guards = {
   send: (state: AbstractBoardState, config: BoardModelConfig, agent: AgentId, box: BoxId, message: MessageId): boolean =>
     state.registered[agent] === true &&
     (state.mstatus[message] ?? "absent") === "absent" &&
-    (state.mailbox[box]?.length ?? 0) + ((state.lease[box] ?? null) !== null ? 1 : 0) < config.mailboxCapacity &&
+    (state.mailbox[box]?.length ?? 0) < config.mailboxCapacity &&
     state.clock < (config.maxClock ?? config.messages.length),
 
-  recv: (state: AbstractBoardState, agent: AgentId, box: BoxId, message: MessageId): boolean =>
+  deliver: (state: AbstractBoardState, agent: AgentId, box: BoxId, message: MessageId): boolean =>
     state.registered[agent] === true &&
     state.bound[agent] === box &&
     state.owner[box] === agent &&
-    state.lease[box] === null &&
+    state.mstatus[message] === "queued" &&
     (state.mailbox[box]?.length ?? 0) > 0 &&
-    state.mailbox[box]![0] === message &&
-    state.mstatus[message] === "queued",
+    state.mailbox[box]![0] === message,
 
-  ack: (state: AbstractBoardState, agent: AgentId, box: BoxId, message: MessageId): boolean =>
-    state.bound[agent] === box && state.owner[box] === agent && state.lease[box] === message && state.mstatus[message] === "fetched",
+  /** A failure has no acting agent; the runtime triggers it on expiry or error. */
+  fail: (state: AbstractBoardState, box: BoxId, message: MessageId): boolean =>
+    state.mstatus[message] === "queued" &&
+    state.recipient[message] === box &&
+    (state.mailbox[box]?.length ?? 0) > 0 &&
+    state.mailbox[box]![0] === message,
 
-  rollback: (state: AbstractBoardState, agent: AgentId, box: BoxId): boolean =>
-    state.bound[agent] === box && state.owner[box] === agent && state.lease[box] !== null,
+  subscribe: (state: AbstractBoardState, config: BoardModelConfig, agent: AgentId, topic: TopicId): boolean =>
+    state.registered[agent] === true &&
+    config.topics.includes(topic) &&
+    !(state.subscribed[agent] ?? []).includes(topic),
 
-  /** A lease may be revoked at any time; the runtime triggers this on TTL expiry. */
-  reclaim: (state: AbstractBoardState, box: BoxId): boolean => state.lease[box] !== null,
+  unsubscribe: (state: AbstractBoardState, agent: AgentId, topic: TopicId): boolean =>
+    state.registered[agent] === true && (state.subscribed[agent] ?? []).includes(topic),
 
   post: (
     state: AbstractBoardState,
     config: BoardModelConfig,
     agent: AgentId,
     post: PostId,
-    topic: string,
+    topic: TopicId,
     parent: PostId | null,
   ): boolean =>
     state.registered[agent] === true &&
@@ -219,6 +243,7 @@ export function referenceReduceBoardState(
         ...state,
         registered: set(state.registered, event.agent, true),
         bound: state.bound[event.agent] === undefined ? set(state.bound, event.agent, null) : state.bound,
+        subscribed: state.subscribed[event.agent] === undefined ? set(state.subscribed, event.agent, []) : state.subscribed,
       };
     case "bind": {
       require(guards.bind(state, event.agent, event.box), "bind-not-enabled", event.box);
@@ -227,21 +252,15 @@ export function referenceReduceBoardState(
         bound: set(state.bound, event.agent, event.box),
         owner: set(state.owner, event.box, event.agent),
         mailbox: state.mailbox[event.box] === undefined ? set(state.mailbox, event.box, []) : state.mailbox,
-        lease: state.lease[event.box] === undefined ? set(state.lease, event.box, null) : state.lease,
       };
     }
     case "unbind": {
       require(guards.unbind(state, event.agent), "unbind-not-enabled", event.agent);
       const box = state.bound[event.agent]!;
-      const lease = state.lease[box] ?? null;
-      const requeued = lease === null ? state.mailbox[box]! : [lease, ...state.mailbox[box]!];
       return {
         ...state,
         bound: set(state.bound, event.agent, null),
         owner: set(state.owner, box, null),
-        mailbox: set(state.mailbox, box, requeued),
-        lease: set(state.lease, box, null),
-        mstatus: lease === null ? state.mstatus : set(state.mstatus, lease, "queued"),
       };
     }
     case "send": {
@@ -258,44 +277,44 @@ export function referenceReduceBoardState(
         mailbox: set(state.mailbox, event.box, [...(state.mailbox[event.box] ?? []), event.message]),
         // Materialize the Init defaults when the live instance admits a new box.
         owner: state.owner[event.box] === undefined ? set(state.owner, event.box, null) : state.owner,
-        lease: state.lease[event.box] === undefined ? set(state.lease, event.box, null) : state.lease,
       };
     }
-    case "recv": {
-      require(guards.recv(state, event.agent, event.box, event.message), "recv-not-enabled", event.message);
+    case "deliver": {
+      require(guards.deliver(state, event.agent, event.box, event.message), "deliver-not-enabled", event.message);
       return {
         ...state,
-        mstatus: set(state.mstatus, event.message, "fetched"),
+        mstatus: set(state.mstatus, event.message, "delivered"),
         mailbox: set(state.mailbox, event.box, state.mailbox[event.box]!.slice(1)),
-        lease: set(state.lease, event.box, event.message),
       };
     }
-    case "ack": {
-      require(guards.ack(state, event.agent, event.box, event.message), "ack-not-enabled", event.message);
+    case "fail": {
+      require(guards.fail(state, event.box, event.message), "fail-not-enabled", event.message);
       return {
         ...state,
-        mstatus: set(state.mstatus, event.message, "acked"),
-        lease: set(state.lease, event.box, null),
+        mstatus: set(state.mstatus, event.message, "failed"),
+        mailbox: set(state.mailbox, event.box, state.mailbox[event.box]!.slice(1)),
       };
     }
-    case "rollback": {
-      require(guards.rollback(state, event.agent, event.box), "rollback-not-enabled", event.agent);
-      const message = state.lease[event.box]!;
+    case "subscribe": {
+      require(guards.subscribe(state, config, event.agent, event.topic), "subscribe-not-enabled", event.topic);
       return {
         ...state,
-        mstatus: set(state.mstatus, message, "queued"),
-        mailbox: set(state.mailbox, event.box, [message, ...(state.mailbox[event.box] ?? [])]),
-        lease: set(state.lease, event.box, null),
+        subscribed: set(
+          state.subscribed,
+          event.agent,
+          sortedUnique([...(state.subscribed[event.agent] ?? []), event.topic]),
+        ),
       };
     }
-    case "reclaim": {
-      require(guards.reclaim(state, event.box), "reclaim-not-enabled", event.box);
-      const message = state.lease[event.box]!;
+    case "unsubscribe": {
+      require(guards.unsubscribe(state, event.agent, event.topic), "unsubscribe-not-enabled", event.topic);
       return {
         ...state,
-        mstatus: set(state.mstatus, message, "queued"),
-        mailbox: set(state.mailbox, event.box, [message, ...(state.mailbox[event.box] ?? [])]),
-        lease: set(state.lease, event.box, null),
+        subscribed: set(
+          state.subscribed,
+          event.agent,
+          (state.subscribed[event.agent] ?? []).filter((topic) => topic !== event.topic),
+        ),
       };
     }
     case "post": {
@@ -312,6 +331,12 @@ export function referenceReduceBoardState(
         porigin: set(state.porigin, event.post, event.agent),
         parent: set(state.parent, event.post, event.parent),
         topic: set(state.topic, event.post, event.topic),
+        // Participation is the default watch.
+        subscribed: set(
+          state.subscribed,
+          event.agent,
+          sortedUnique([...(state.subscribed[event.agent] ?? []), event.topic]),
+        ),
       };
     }
   }
@@ -329,12 +354,14 @@ export function enabledEvents(state: AbstractBoardState, config: BoardModelConfi
     if (guards.unbind(state, agent)) events.push({ type: "unbind", agent });
     for (const box of config.boxes) {
       if (guards.bind(state, agent, box)) events.push({ type: "bind", agent, box });
-      if (guards.rollback(state, agent, box)) events.push({ type: "rollback", agent, box });
       for (const message of config.messages) {
-        if (guards.recv(state, agent, box, message)) events.push({ type: "recv", agent, box, message });
-        if (guards.ack(state, agent, box, message)) events.push({ type: "ack", agent, box, message });
+        if (guards.deliver(state, agent, box, message)) events.push({ type: "deliver", agent, box, message });
         if (guards.send(state, config, agent, box, message)) events.push({ type: "send", agent, box, message });
       }
+    }
+    for (const topic of config.topics) {
+      if (guards.subscribe(state, config, agent, topic)) events.push({ type: "subscribe", agent, topic });
+      if (guards.unsubscribe(state, agent, topic)) events.push({ type: "unsubscribe", agent, topic });
     }
     for (const post of config.posts) {
       for (const topic of config.topics) {
@@ -350,7 +377,9 @@ export function enabledEvents(state: AbstractBoardState, config: BoardModelConfi
     }
   }
   for (const box of config.boxes) {
-    if (guards.reclaim(state, box)) events.push({ type: "reclaim", box });
+    for (const message of config.messages) {
+      if (guards.fail(state, box, message)) events.push({ type: "fail", box, message });
+    }
   }
   return events;
 }
@@ -373,6 +402,8 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
     Object.keys(record).length === domain.length && domain.every((id) => Object.hasOwn(record, id) && accepts(record[id]!));
   const option = (domain: readonly string[]) => (value: string | null): boolean => value === null || domain.includes(value);
   const timestamp = (value: number): boolean => Number.isInteger(value) && value >= 0 && value <= (config.maxClock ?? config.messages.length);
+  const topicSet = (topics: readonly TopicId[]): boolean =>
+    topics.every((topic) => config.topics.includes(topic)) && new Set(topics).size === topics.length;
   const typed =
     functionOK(state.registered, config.agents, (value) => typeof value === "boolean") &&
     functionOK(state.bound, config.agents, option(config.boxes)) &&
@@ -381,9 +412,9 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
     functionOK(state.origin, config.messages, option(config.agents)) &&
     functionOK(state.recipient, config.messages, option(config.boxes)) &&
     functionOK(state.sentAt, config.messages, timestamp) &&
-    functionOK(state.mstatus, config.messages, (value) => ["absent", "queued", "fetched", "acked"].includes(value)) &&
+    functionOK(state.mstatus, config.messages, (value) => ["absent", "queued", "delivered", "failed"].includes(value)) &&
     functionOK(state.mailbox, config.boxes, (queue) => queue.every((message) => config.messages.includes(message))) &&
-    functionOK(state.lease, config.boxes, option(config.messages)) &&
+    functionOK(state.subscribed, config.agents, topicSet) &&
     functionOK(state.pstatus, config.posts, (value) => ["absent", "posted"].includes(value)) &&
     functionOK(state.author, config.posts, option(config.agents)) &&
     functionOK(state.porigin, config.posts, option(config.agents)) &&
@@ -407,55 +438,42 @@ export function boardInvariantViolations(state: AbstractBoardState, config: Boar
     }
   }
 
-  // Placement: every message is in exactly one place, or acked.
+  // Subscriptions belong to registered agents only.
+  for (const agent of config.agents) {
+    if (state.registered[agent] !== true && (state.subscribed[agent] ?? []).length > 0) {
+      push("SubsRegistered", `${agent} holds subscriptions while unregistered`);
+    }
+  }
+
+  // Placement: every message is in exactly one place, or settled.
   const placements = new Map<MessageId, string[]>();
   for (const message of config.messages) placements.set(message, []);
   for (const box of config.boxes) {
     const queue = state.mailbox[box] ?? [];
-    const lease = state.lease[box] ?? null;
-    // A leased message still occupies a slot until it is acked.
-    const slots = queue.length + (lease !== null ? 1 : 0);
-    if (slots > config.mailboxCapacity) push("Bounded", `${box} mailbox ${queue.length} + lease > capacity`);
+    if (queue.length > config.mailboxCapacity) push("Bounded", `${box} mailbox ${queue.length} > capacity`);
     for (const message of queue) {
       placements.get(message)?.push(`mailbox:${box}`);
       if (state.recipient[message] !== box) push("QueueRecipient", `${message} queued in a non-recipient mailbox`);
       if (state.mstatus[message] !== "queued") push("Placement", `${message} in mailbox but not queued`);
     }
-    if (lease !== null) {
-      if (state.mstatus[lease] !== "fetched") push("Placement", `${lease} leased but not fetched`);
-      if (queue.includes(lease)) push("LeaseNotInMailbox", `${lease} both leased and queued`);
-      if (queue.some((message) => state.sentAt[lease]! >= state.sentAt[message]!)) {
-        push("LeasePrecedes", `${lease} does not precede its mailbox`);
+    for (let i = 0; i + 1 < queue.length; i += 1) {
+      if ((state.sentAt[queue[i]!] ?? 0) >= (state.sentAt[queue[i + 1]!] ?? 0)) {
+        push("Fifo", `${box} mailbox out of send order`);
       }
     }
-    if (lease != null) placements.get(lease)?.push(`lease:${box}`);
   }
   for (const message of config.messages) {
     const status = state.mstatus[message] ?? "absent";
     const places = placements.get(message) ?? [];
     if (status === "absent" && places.length !== 0) push("Placement", `${message} absent but placed`);
     if (status === "queued" && places.length !== 1) push("Placement", `${message} queued in ${places.length} places`);
-    if (status === "fetched" && places.length !== 1) push("Placement", `${message} fetched in ${places.length} places`);
-    if (status === "acked" && places.length !== 0) push("Placement", `${message} acked but placed`);
-    if (status === "fetched") {
-      const owner = config.boxes.find((box) => (state.lease[box] ?? null) === message);
-      if (owner === undefined || state.recipient[message] !== owner) {
-        push("LeaseRecipient", `${message} leased by a non-recipient`);
-      }
-    }
+    if (status === "delivered" && places.length !== 0) push("Placement", `${message} delivered but placed`);
+    if (status === "failed" && places.length !== 0) push("Placement", `${message} failed but placed`);
     if (status !== "absent" && state.sentAt[message]! > state.clock) {
       push("SentAtLeClock", `${message} sent after the current clock`);
     }
     if (status !== "absent" && state.sender[message] !== state.origin[message]) {
       push("Unforgeable", `${message} sender ${state.sender[message]} != origin ${state.origin[message]}`);
-    }
-    for (const box of config.boxes) {
-      const q = state.mailbox[box] ?? [];
-      for (let i = 0; i + 1 < q.length; i += 1) {
-        if ((state.sentAt[q[i]!] ?? 0) >= (state.sentAt[q[i + 1]!] ?? 0)) {
-          push("Fifo", `${box} mailbox out of send order`);
-        }
-      }
     }
   }
 
@@ -492,13 +510,11 @@ export const BOARD_INVARIANT_NAMES: readonly string[] = [
   "OwnerRegistered",
   "Bounded",
   "Placement",
-  "LeaseRecipient",
   "QueueRecipient",
-  "LeaseNotInMailbox",
-  "LeasePrecedes",
   "SentAtLeClock",
   "Unforgeable",
   "Fifo",
+  "SubsRegistered",
   "BoardNoDuplicates",
   "BoardAppendOnly",
   "ParentPosted",

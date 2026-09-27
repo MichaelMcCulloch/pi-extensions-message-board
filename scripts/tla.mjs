@@ -106,9 +106,14 @@ async function checkModel(java, jar) {
   writeFileSync(logPath, output, "utf8");
   if (result.status !== 0) throw new Error(`TLC failed for the model (exit ${result.status})`);
 
-  const distinct = output.replaceAll(",", "").match(/(\d+)\s+distinct states found/);
+  // Take the LAST summary line: temporal-property checking prints per-branch
+  // progress counts before the final model-checking summary.
+  const summaries = [
+    ...output.matchAll(/([\d,]+) states generated, ([\d,]+) distinct states found, 0 states left on queue\./g),
+  ];
+  const distinct = summaries.at(-1);
   if (distinct) {
-    const count = Number(distinct[1]);
+    const count = Number(distinct[2].replaceAll(",", ""));
     writeFileSync(
       resolve(specDir, ".tlc-state-count.json"),
       JSON.stringify({ distinctStates: count, version: TLA_VERSION }, null, 2),

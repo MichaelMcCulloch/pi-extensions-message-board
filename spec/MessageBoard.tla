@@ -1,43 +1,35 @@
 ------------------------------ MODULE MessageBoard ------------------------------
-\* The named-mailbox revision: mailboxes are named, an agent binds a name to
-\* serve it, and a lease may be reclaimed (the runtime triggers reclaim on TTL
-\* expiry). Binding decouples delivery from a session id, so a fresh session can
-\* drain a mailbox a previous session left; reclaim means a fetched-but-unacked
-\* message is never stranded when its consumer dies.
+\* The push revision. A message is queued and then either delivered to the
+\* recipient's context or failed; both terminal states are absorbing. There is
+\* no lease and no ack: the runtime that injects a message commits the delivery,
+\* and a failure (expiry, injection error) is reported to the sender. Posting
+\* in a topic subscribes the author to it, and only registration gates explicit
+\* subscribe/unsubscribe.
 \*
-\* Four machines: Registry, Binding, Mailbox (queue + lease), Message lifecycle,
-\* plus the append-only Forum. Sync with src/formal/model.ts.
+\* Machines: Registry, Binding, Mailbox (queue only), Message lifecycle,
+\* Subscriptions, plus the append-only Forum. Sync with src/formal/model.ts.
 \* --------------------------------------------------------------------------
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Agents, Boxes, Messages, Posts, Topics, Cap, MaxClock
 
-\* The "no value" sentinel of an option type. It must be FRESH: the inductive
-\* proof needs `None \notin Agents \cup Boxes \cup Messages \cup Posts \cup Topics`,
-\* otherwise `lea(m)` for `m = None` counts every unleased mailbox (and bindings,
-\* parents, topics, and owners become ambiguous).
+\* The "no value" sentinel of an option type. It must be FRESH: no agent, box,
+\* message, post, or topic may be named "none", or options become ambiguous.
 None     == "none"
 
-MStatus == {"absent", "queued", "fetched", "acked"}
+MStatus == {"absent", "queued", "delivered", "failed"}
 PStatus == {"absent", "posted"}
 
 VARIABLES
     registered, bound, owner, sender, origin, recipient, sentAt, mstatus,
-    mailbox, lease, pstatus, author, porigin, parent, topic, posted, clock
+    mailbox, subscribed, pstatus, author, porigin, parent, topic, posted, clock
 
 vars == <<registered, bound, owner, sender, origin, recipient, sentAt, mstatus,
-          mailbox, lease, pstatus, author, porigin, parent, topic, posted, clock>>
+          mailbox, subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
 
 Members(s) == {s[i] : i \in DOMAIN s}
 Occ(m) == {b \in Boxes : m \in Members(mailbox[b])}
-Lea(m) == {b \in Boxes : lease[b] = m}
-
-\* A message that has been fetched but not acked is on lease: it has left the
-\* mailbox queue but still occupies a mailbox slot until it is acked. Capacity
-\* must therefore count the lease as well as the queue, or a rollback/reclaim
-\* can push a mailbox past Cap.
-LeasedSlots(l) == IF l = None THEN 0 ELSE 1
 
 TypeOK ==
     /\ registered \in [Agents -> BOOLEAN]
@@ -49,7 +41,7 @@ TypeOK ==
     /\ sentAt \in [Messages -> 0..MaxClock]
     /\ mstatus \in [Messages -> MStatus]
     /\ mailbox \in [Boxes -> Seq(Messages)]
-    /\ lease \in [Boxes -> Messages \cup {None}]
+    /\ subscribed \in [Agents -> SUBSET Topics]
     /\ pstatus \in [Posts -> PStatus]
     /\ author \in [Posts -> Agents \cup {None}]
     /\ porigin \in [Posts -> Agents \cup {None}]
@@ -68,7 +60,7 @@ Init ==
     /\ sentAt = [m \in Messages |-> 0]
     /\ mstatus = [m \in Messages |-> "absent"]
     /\ mailbox = [b \in Boxes |-> <<>>]
-    /\ lease = [b \in Boxes |-> None]
+    /\ subscribed = [a \in Agents |-> {}]
     /\ pstatus = [p \in Posts |-> "absent"]
     /\ author = [p \in Posts |-> None]
     /\ porigin = [p \in Posts |-> None]
@@ -84,13 +76,17 @@ Init ==
 GuardRegister(a) == ~registered[a]
 GuardBind(a, b) == registered[a] /\ bound[a] = None /\ owner[b] = None
 GuardUnbind(a) == registered[a] /\ bound[a] # None
-GuardSend(s, b, m) == registered[s] /\ mstatus[m] = "absent" /\ Len(mailbox[b]) + LeasedSlots(lease[b]) < Cap /\ clock < MaxClock
-GuardRecv(a, b, m) ==
+GuardSend(s, b, m) == registered[s] /\ mstatus[m] = "absent" /\ Len(mailbox[b]) < Cap /\ clock < MaxClock
+GuardDeliver(a, b, m) ==
     /\ registered[a] /\ bound[a] = b /\ owner[b] = a
-    /\ lease[b] = None /\ Len(mailbox[b]) > 0 /\ Head(mailbox[b]) = m /\ mstatus[m] = "queued"
-GuardAck(a, b, m) == bound[a] = b /\ owner[b] = a /\ lease[b] = m /\ mstatus[m] = "fetched"
-GuardRollback(a, b) == bound[a] = b /\ owner[b] = a /\ lease[b] # None
-GuardReclaim(b) == lease[b] # None
+    /\ mstatus[m] = "queued" /\ Len(mailbox[b]) > 0 /\ Head(mailbox[b]) = m
+\* A failure has no acting agent: the runtime triggers it on expiry or when
+\* injection throws. Only the head can fail, so the queue stays a queue.
+GuardFail(b, m) ==
+    /\ mstatus[m] = "queued" /\ recipient[m] = b
+    /\ Len(mailbox[b]) > 0 /\ Head(mailbox[b]) = m
+GuardSubscribe(a, t) == registered[a] /\ t \in Topics /\ t \notin subscribed[a]
+GuardUnsubscribe(a, t) == registered[a] /\ t \in subscribed[a]
 GuardPost(a, p, t, par) ==
     /\ registered[a] /\ pstatus[p] = "absent" /\ t \in Topics
     /\ (par = None \/ (par \in Posts /\ pstatus[par] = "posted" /\ topic[par] = t))
@@ -103,25 +99,22 @@ Register(a) ==
     /\ GuardRegister(a)
     /\ registered' = [registered EXCEPT ![a] = TRUE]
     /\ UNCHANGED <<bound, owner, sender, origin, recipient, sentAt, mstatus,
-                   mailbox, lease, pstatus, author, porigin, parent, topic, posted, clock>>
+                   mailbox, subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
 
 Bind(a, b) ==
     /\ GuardBind(a, b)
     /\ bound' = [bound EXCEPT ![a] = b]
     /\ owner' = [owner EXCEPT ![b] = a]
     /\ UNCHANGED <<registered, sender, origin, recipient, sentAt, mstatus,
-                   mailbox, lease, pstatus, author, porigin, parent, topic, posted, clock>>
+                   mailbox, subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
 
 Unbind(a) ==
     /\ GuardUnbind(a)
     /\ LET b == bound[a] IN
-       /\ mstatus' = IF lease[b] = None THEN mstatus ELSE [mstatus EXCEPT ![lease[b]] = "queued"]
-       /\ mailbox' = [mailbox EXCEPT ![b] = IF lease[b] = None THEN mailbox[b] ELSE <<lease[b]>> \o mailbox[b]]
        /\ bound' = [bound EXCEPT ![a] = None]
        /\ owner' = [owner EXCEPT ![b] = None]
-       /\ lease' = [lease EXCEPT ![b] = None]
-    /\ UNCHANGED <<registered, sender, origin, recipient, sentAt,
-                   pstatus, author, porigin, parent, topic, posted, clock>>
+    /\ UNCHANGED <<registered, sender, origin, recipient, sentAt, mstatus,
+                   mailbox, subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
 
 Send(s, b, m) ==
     /\ GuardSend(s, b, m)
@@ -132,41 +125,35 @@ Send(s, b, m) ==
     /\ sentAt' = [sentAt EXCEPT ![m] = clock + 1]
     /\ mailbox' = [mailbox EXCEPT ![b] = Append(mailbox[b], m)]
     /\ clock' = clock + 1
-    /\ UNCHANGED <<registered, bound, owner, lease, pstatus, author, porigin, parent, topic, posted>>
+    /\ UNCHANGED <<registered, bound, owner, subscribed, pstatus, author, porigin, parent, topic, posted>>
 
-Recv(a, b, m) ==
-    /\ GuardRecv(a, b, m)
-    /\ mstatus' = [mstatus EXCEPT ![m] = "fetched"]
+Deliver(a, b, m) ==
+    /\ GuardDeliver(a, b, m)
+    /\ mstatus' = [mstatus EXCEPT ![m] = "delivered"]
     /\ mailbox' = [mailbox EXCEPT ![b] = Tail(mailbox[b])]
-    /\ lease' = [lease EXCEPT ![b] = m]
     /\ UNCHANGED <<registered, bound, owner, sender, origin, recipient, sentAt,
-                   pstatus, author, porigin, parent, topic, posted, clock>>
+                   subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
 
-Ack(a, b, m) ==
-    /\ GuardAck(a, b, m)
-    /\ mstatus' = [mstatus EXCEPT ![m] = "acked"]
-    /\ lease' = [lease EXCEPT ![b] = None]
+Fail(b, m) ==
+    /\ GuardFail(b, m)
+    /\ mstatus' = [mstatus EXCEPT ![m] = "failed"]
+    /\ mailbox' = [mailbox EXCEPT ![b] = Tail(mailbox[b])]
     /\ UNCHANGED <<registered, bound, owner, sender, origin, recipient, sentAt,
-                   mailbox, pstatus, author, porigin, parent, topic, posted, clock>>
+                   subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
 
-Rollback(a, b) ==
-    /\ GuardRollback(a, b)
-    /\ LET m == lease[b] IN
-       /\ mstatus' = [mstatus EXCEPT ![m] = "queued"]
-       /\ mailbox' = [mailbox EXCEPT ![b] = <<m>> \o mailbox[b]]
-    /\ lease' = [lease EXCEPT ![b] = None]
+Subscribe(a, t) ==
+    /\ GuardSubscribe(a, t)
+    /\ subscribed' = [subscribed EXCEPT ![a] = subscribed[a] \cup {t}]
     /\ UNCHANGED <<registered, bound, owner, sender, origin, recipient, sentAt,
-                   pstatus, author, porigin, parent, topic, posted, clock>>
+                   mstatus, mailbox, pstatus, author, porigin, parent, topic, posted, clock>>
 
-Reclaim(b) ==
-    /\ GuardReclaim(b)
-    /\ LET m == lease[b] IN
-       /\ mstatus' = [mstatus EXCEPT ![m] = "queued"]
-       /\ mailbox' = [mailbox EXCEPT ![b] = <<m>> \o mailbox[b]]
-    /\ lease' = [lease EXCEPT ![b] = None]
+Unsubscribe(a, t) ==
+    /\ GuardUnsubscribe(a, t)
+    /\ subscribed' = [subscribed EXCEPT ![a] = subscribed[a] \ {t}]
     /\ UNCHANGED <<registered, bound, owner, sender, origin, recipient, sentAt,
-                   pstatus, author, porigin, parent, topic, posted, clock>>
+                   mstatus, mailbox, pstatus, author, porigin, parent, topic, posted, clock>>
 
+\* Voice in a topic subscribes the author: participation is the default watch.
 Post(a, p, t, par) ==
     /\ GuardPost(a, p, t, par)
     /\ pstatus' = [pstatus EXCEPT ![p] = "posted"]
@@ -175,18 +162,19 @@ Post(a, p, t, par) ==
     /\ parent' = [parent EXCEPT ![p] = par]
     /\ topic' = [topic EXCEPT ![p] = t]
     /\ posted' = Append(posted, p)
+    /\ subscribed' = [subscribed EXCEPT ![a] = subscribed[a] \cup {t}]
     /\ UNCHANGED <<registered, bound, owner, sender, origin, recipient, sentAt,
-                   mstatus, mailbox, lease, clock>>
+                   mstatus, mailbox, clock>>
 
 Next ==
     \/ \E a \in Agents: Register(a)
     \/ \E a \in Agents, b \in Boxes: Bind(a, b)
     \/ \E a \in Agents: Unbind(a)
     \/ \E s \in Agents, b \in Boxes, m \in Messages: Send(s, b, m)
-    \/ \E a \in Agents, b \in Boxes, m \in Messages: Recv(a, b, m)
-    \/ \E a \in Agents, b \in Boxes, m \in Messages: Ack(a, b, m)
-    \/ \E a \in Agents, b \in Boxes: Rollback(a, b)
-    \/ \E b \in Boxes: Reclaim(b)
+    \/ \E a \in Agents, b \in Boxes, m \in Messages: Deliver(a, b, m)
+    \/ \E b \in Boxes, m \in Messages: Fail(b, m)
+    \/ \E a \in Agents, t \in Topics: Subscribe(a, t)
+    \/ \E a \in Agents, t \in Topics: Unsubscribe(a, t)
     \/ \E a \in Agents, p \in Posts, t \in Topics, par \in Posts \cup {None}: Post(a, p, t, par)
 
 \* ---------------------------------------------------------------------------
@@ -199,22 +187,29 @@ BoundConsistent ==
 OwnerConsistent ==
     \A b \in Boxes: (owner[b] # None => bound[owner[b]] = b /\ registered[owner[b]])
 
+\* Every message is in exactly one place, or settled; delivery never changes
+\* authorship; a sent message was sent at or before the current clock.
 MessageStatus ==
     \A m \in Messages:
-         /\ (mstatus[m] = "absent"  => Cardinality(Occ(m)) = 0 /\ Cardinality(Lea(m)) = 0)
-         /\ (mstatus[m] = "queued"  => Cardinality(Occ(m)) = 1 /\ Cardinality(Lea(m)) = 0)
-         /\ (mstatus[m] = "fetched" => Cardinality(Occ(m)) = 0 /\ Cardinality(Lea(m)) = 1)
-         /\ (mstatus[m] = "acked"   => Cardinality(Occ(m)) = 0 /\ Cardinality(Lea(m)) = 0)
-         /\ Cardinality(Occ(m)) + Cardinality(Lea(m)) <= 1
+         /\ (mstatus[m] = "absent"    => Cardinality(Occ(m)) = 0)
+         /\ (mstatus[m] = "queued"    => Cardinality(Occ(m)) = 1)
+         /\ (mstatus[m] = "delivered" => Cardinality(Occ(m)) = 0)
+         /\ (mstatus[m] = "failed"    => Cardinality(Occ(m)) = 0)
+         /\ Cardinality(Occ(m)) <= 1
          /\ (mstatus[m] # "absent" => sender[m] = origin[m])
+         /\ (mstatus[m] # "absent" => sentAt[m] <= clock)
 
 MailboxInv ==
     \A b \in Boxes:
-         /\ Len(mailbox[b]) + LeasedSlots(lease[b]) <= Cap
-         /\ (lease[b] = None \/ (lease[b] \in Messages /\ mstatus[lease[b]] = "fetched" /\ recipient[lease[b]] = b))
-         \* Needed by Recv: moving the head to a lease preserves its recipient.
+         /\ Len(mailbox[b]) <= Cap
          /\ \A i \in DOMAIN mailbox[b]: recipient[mailbox[b][i]] = b
+         \* Needed by Deliver and Fail: the head is removed, never the middle,
+         \* so the mailbox stays sorted by send order.
          /\ \A i, j \in DOMAIN mailbox[b]: i < j => sentAt[mailbox[b][i]] < sentAt[mailbox[b][j]]
+
+\* Only registered agents hold subscriptions.
+SubsRegistered ==
+    \A a \in Agents: registered[a] \/ subscribed[a] = {}
 
 PostsInv ==
     \A p \in Posts:
@@ -229,52 +224,26 @@ PostedDistinct ==
 PostedMembership ==
     \A p \in Posts: (pstatus[p] = "posted") <=> (p \in Members(posted))
 
-\* ---------------------------------------------------------------------------
-\* Strengthenings required for induction (true in every reachable state, but not
-\* implied by the invariants above; discovered by the TLAPS proof).
-\* ---------------------------------------------------------------------------
-
-\* A message on lease has been removed from its mailbox, so a rollback or
-\* reclaim can put it back at the front without duplicating it.
-LeaseNotInMailbox ==
-    \A b \in Boxes: lease[b] # None => lease[b] \notin Members(mailbox[b])
-
-\* A message on lease arrived before every message still in its mailbox, so
-\* putting it back at the front keeps the mailbox sorted by sentAt.
-LeasePrecedes ==
-    \A b \in Boxes: lease[b] # None =>
-        \A i \in DOMAIN mailbox[b]: sentAt[lease[b]] < sentAt[mailbox[b][i]]
-
-\* Every message that left "absent" was sent at or before the current clock, so
-\* a fresh send (sentAt = clock + 1) belongs at the end of its mailbox.
-SentAtLeClock ==
-    \A m \in Messages: mstatus[m] # "absent" => sentAt[m] <= clock
-
 Inv == TypeOK /\ BoundConsistent /\ OwnerConsistent /\ MessageStatus
-       /\ MailboxInv /\ PostsInv /\ PostedDistinct /\ PostedMembership
-       /\ LeaseNotInMailbox /\ LeasePrecedes /\ SentAtLeClock
+       /\ MailboxInv /\ SubsRegistered /\ PostsInv /\ PostedDistinct /\ PostedMembership
 
 \* ---------------------------------------------------------------------------
 \* Liveness
 \* ---------------------------------------------------------------------------
 
-AckedTerminal == \A m \in Messages: [] (mstatus[m] = "acked" => [] (mstatus[m] = "acked"))
-LeaseClears == \A b \in Boxes: [] (lease[b] # None => <> (lease[b] = None))
-\* If a mailbox ends up with a permanent serving agent, its inbox drains.
-\* A name that stays unbound is a durable inbox, not a delivery promise.
-QueuedDelivered ==
-    \A b \in Boxes:
-        (<>[] (owner[b] # None)) =>
-        ([] (owner[b] # None =>
-              \A m \in Messages:
-                  (recipient[m] = b /\ mstatus[m] = "queued"
-                   => <> (mstatus[m] \in {"fetched", "acked"}))))
+\* Delivery and failure are terminal.
+DeliveredTerminal == \A m \in Messages: [] (mstatus[m] = "delivered" => [] (mstatus[m] = "delivered"))
+FailedTerminal == \A m \in Messages: [] (mstatus[m] = "failed" => [] (mstatus[m] = "failed"))
+\* The runtime keeps working: a queued message is eventually delivered or
+\* reported failed. Which of the two is a runtime policy (expiry, injection
+\* error), not a property of the protocol.
+QueuedSettles ==
+    \A m \in Messages: [](mstatus[m] = "queued" => <>(mstatus[m] \in {"delivered", "failed"}))
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
-    /\ \A b \in Boxes: WF_vars(Reclaim(b))
-    /\ \A a \in Agents, b \in Boxes, m \in Messages: SF_vars(Recv(a, b, m))
-    /\ \A a \in Agents, b \in Boxes, m \in Messages: SF_vars(Ack(a, b, m))
+    /\ \A a \in Agents, b \in Boxes, m \in Messages: WF_vars(Deliver(a, b, m))
+    /\ \A b \in Boxes, m \in Messages: WF_vars(Fail(b, m))
 
 =============================================================================

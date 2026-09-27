@@ -1,7 +1,7 @@
 /**
- * Machine vocabulary (named-mailbox revision).
+ * Machine vocabulary (push revision).
  *
- * The board is the synchronous product of five machines. `test/machines.spec.ts`
+ * The board is the synchronous product of six machines. `test/machines.spec.ts`
  * and `test/spec-parity.spec.ts` check this against the executable model and the
  * TLA+ actions.
  */
@@ -42,17 +42,22 @@ export const BINDING_MACHINE: MachineSpec = {
   ],
 };
 
-/** Mailbox: a per-name FIFO plus its single lease. */
+/**
+ * Mailbox: a per-name FIFO of undelivered messages. `empty` and `pending` are
+ * nondeterministic on the consuming actions: the queue may still hold other
+ * messages after one is removed.
+ */
 export const MAILBOX_MACHINE: MachineSpec = {
   name: "MailboxMachine",
-  role: "per-name queue and lease",
-  states: ["idle", "queued", "fetched"],
+  role: "per-name queue of undelivered messages",
+  states: ["empty", "pending"],
   edges: [
-    { from: "idle", on: "send", to: "queued" },
-    { from: "queued", on: "recv", to: "fetched" },
-    { from: "fetched", on: "ack", to: "idle" },
-    { from: "fetched", on: "rollback", to: "queued" },
-    { from: "fetched", on: "reclaim", to: "queued" },
+    { from: "empty", on: "send", to: "pending" },
+    { from: "pending", on: "send", to: "pending" },
+    { from: "pending", on: "deliver", to: "pending" },
+    { from: "pending", on: "deliver", to: "empty" },
+    { from: "pending", on: "fail", to: "pending" },
+    { from: "pending", on: "fail", to: "empty" },
   ],
 };
 
@@ -60,13 +65,25 @@ export const MAILBOX_MACHINE: MachineSpec = {
 export const MESSAGE_MACHINE: MachineSpec = {
   name: "MessageMachine",
   role: "direct message lifecycle",
-  states: ["absent", "queued", "fetched", "acked"],
+  states: ["absent", "queued", "delivered", "failed"],
   edges: [
     { from: "absent", on: "send", to: "queued" },
-    { from: "queued", on: "recv", to: "fetched" },
-    { from: "fetched", on: "ack", to: "acked" },
-    { from: "fetched", on: "rollback", to: "queued" },
-    { from: "fetched", on: "reclaim", to: "queued" },
+    { from: "queued", on: "deliver", to: "delivered" },
+    { from: "queued", on: "fail", to: "failed" },
+  ],
+};
+
+/** Subscription: which topics an agent watches; posting subscribes the author. */
+export const SUBSCRIPTION_MACHINE: MachineSpec = {
+  name: "SubscriptionMachine",
+  role: "topic watch list",
+  states: ["none", "watching"],
+  edges: [
+    { from: "none", on: "subscribe", to: "watching" },
+    { from: "watching", on: "subscribe", to: "watching" },
+    { from: "watching", on: "unsubscribe", to: "none" },
+    { from: "none", on: "post", to: "watching" },
+    { from: "watching", on: "post", to: "watching" },
   ],
 };
 
@@ -84,6 +101,7 @@ export const ALL_MACHINES: readonly MachineSpec[] = [
   BINDING_MACHINE,
   MAILBOX_MACHINE,
   MESSAGE_MACHINE,
+  SUBSCRIPTION_MACHINE,
   FORUM_MACHINE,
 ];
 
@@ -91,8 +109,9 @@ export const ALL_MACHINES: readonly MachineSpec[] = [
 export const ACTIONS_BY_MACHINE: Readonly<Record<string, readonly BoardAction[]>> = {
   RegistryMachine: ["register"],
   BindingMachine: ["bind", "unbind"],
-  MailboxMachine: ["send", "recv", "ack", "rollback", "reclaim"],
-  MessageMachine: ["send", "recv", "ack", "rollback", "reclaim"],
+  MailboxMachine: ["send", "deliver", "fail"],
+  MessageMachine: ["send", "deliver", "fail"],
+  SubscriptionMachine: ["subscribe", "unsubscribe", "post"],
   ForumMachine: ["post"],
 };
 

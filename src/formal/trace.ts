@@ -18,6 +18,7 @@ import {
   type BoxId,
   type MessageId,
   type PostId,
+  type TopicId,
 } from "./model.ts";
 
 /** One recorded step. The first step has `event: null`. */
@@ -62,23 +63,23 @@ const send = (agent: string, box: BoxId, message: MessageId): Step => (store) =>
   store.send(agent, box, `body:${message}`, message);
   return { type: "send", agent, box, message };
 };
-const recv = (agent: string, box: BoxId, message: MessageId): Step => (store) => {
-  store.recv(agent, box);
-  return { type: "recv", agent, box, message };
+const deliver = (agent: string, box: BoxId, message: MessageId): Step => (store) => {
+  store.deliver(agent, box, message);
+  return { type: "deliver", agent, box, message };
 };
-const ack = (agent: string, box: BoxId, message: MessageId): Step => (store) => {
-  store.ack(agent, box, message);
-  return { type: "ack", agent, box, message };
+const fail = (box: BoxId, message: MessageId): Step => (store) => {
+  store.fail(box, message);
+  return { type: "fail", box, message };
 };
-const rollback = (agent: string, box: BoxId): Step => (store) => {
-  store.rollback(agent, box);
-  return { type: "rollback", agent, box };
+const subscribe = (agent: string, topic: TopicId): Step => (store) => {
+  store.subscribe(agent, topic);
+  return { type: "subscribe", agent, topic };
 };
-const reclaim = (box: BoxId): Step => (store) => {
-  store.reclaim(box);
-  return { type: "reclaim", box };
+const unsubscribe = (agent: string, topic: TopicId): Step => (store) => {
+  store.unsubscribe(agent, topic);
+  return { type: "unsubscribe", agent, topic };
 };
-const post = (agent: string, id: PostId, topic: string, parent: PostId | null): Step => (store) => {
+const post = (agent: string, id: PostId, topic: TopicId, parent: PostId | null): Step => (store) => {
   store.post(agent, topic, `subject:${id}`, `body:${id}`, parent, id);
   return { type: "post", agent, post: id, topic, parent };
 };
@@ -88,23 +89,53 @@ export function scenarios(): Scenario[] {
   return [
     {
       name: "direct",
-      steps: [register("a1"), register("a2"), bind("a2", "bx1"), send("a1", "bx1", "m1"), recv("a2", "bx1", "m1"), ack("a2", "bx1", "m1")],
+      steps: [
+        register("a1"),
+        register("a2"),
+        bind("a2", "bx1"),
+        send("a1", "bx1", "m1"),
+        deliver("a2", "bx1", "m1"),
+      ],
     },
     {
       name: "durable-unbound-inbox",
-      steps: [register("a1"), register("a2"), send("a1", "bx1", "m1"), bind("a2", "bx1"), recv("a2", "bx1", "m1"), ack("a2", "bx1", "m1")],
+      steps: [
+        register("a1"),
+        register("a2"),
+        send("a1", "bx1", "m1"),
+        bind("a2", "bx1"),
+        deliver("a2", "bx1", "m1"),
+      ],
     },
     {
-      name: "crash-redelivery",
-      steps: [register("a1"), register("a2"), bind("a2", "bx1"), send("a1", "bx1", "m1"), recv("a2", "bx1", "m1"), rollback("a2", "bx1"), recv("a2", "bx1", "m1"), ack("a2", "bx1", "m1")],
+      name: "fifo-order",
+      steps: [
+        register("a1"),
+        bind("a1", "bx1"),
+        send("a1", "bx1", "m1"),
+        send("a1", "bx1", "m2"),
+        deliver("a1", "bx1", "m1"),
+        deliver("a1", "bx1", "m2"),
+      ],
     },
     {
-      name: "ttl-reclaim",
-      steps: [register("a1"), register("a2"), bind("a2", "bx1"), send("a1", "bx1", "m1"), recv("a2", "bx1", "m1"), reclaim("bx1"), recv("a2", "bx1", "m1"), ack("a2", "bx1", "m1")],
+      name: "expiry-failure",
+      steps: [
+        register("a1"),
+        register("a2"),
+        bind("a2", "bx1"),
+        send("a1", "bx1", "m1"),
+        fail("bx1", "m1"),
+      ],
     },
     {
-      name: "unbind-requeues",
-      steps: [register("a1"), register("a2"), bind("a2", "bx1"), send("a1", "bx1", "m1"), recv("a2", "bx1", "m1"), unbind("a2"), bind("a2", "bx1"), recv("a2", "bx1", "m1"), ack("a2", "bx1", "m1")],
+      name: "subscriptions",
+      steps: [
+        register("a1"),
+        subscribe("a1", "t1"),
+        unsubscribe("a1", "t1"),
+        subscribe("a1", "t1"),
+      ],
     },
     {
       name: "forum-thread",
@@ -119,11 +150,11 @@ export function scenarios(): Scenario[] {
         send("a1", "bx1", "m1"),
         send("a1", "bx1", "m2"),
         post("a1", "p1", "t1", null),
-        recv("a2", "bx1", "m1"),
-        ack("a2", "bx1", "m1"),
-        recv("a2", "bx1", "m2"),
+        subscribe("a2", "t1"),
+        deliver("a2", "bx1", "m1"),
         post("a2", "p2", "t1", "p1"),
-        ack("a2", "bx1", "m2"),
+        fail("bx1", "m2"),
+        unsubscribe("a1", "t1"),
         unbind("a2"),
       ],
     },
@@ -163,6 +194,11 @@ function sequence(items: readonly string[]): string {
   return `<<${items.map(quote).join(", ")}>>`;
 }
 
+/** Render a sorted string list as a TLA+ set. */
+function setOf(items: readonly string[]): string {
+  return `{${[...items].sort().map(quote).join(", ")}}`;
+}
+
 function tlaState(state: AbstractBoardState): string {
   const agents = BOARD_MODEL.agents;
   const boxes = BOARD_MODEL.boxes;
@@ -179,7 +215,7 @@ function tlaState(state: AbstractBoardState): string {
     `, sentAt |-> ${record(messages, (m) => String(state.sentAt[m] ?? 0))}`,
     `, mstatus |-> ${record(messages, (m) => quote(state.mstatus[m] ?? "absent"))}`,
     `, mailbox |-> ${record(boxes, (b) => sequence(state.mailbox[b] ?? []))}`,
-    `, lease |-> ${record(boxes, (b) => quote(state.lease[b] ?? NONE))}`,
+    `, subscribed |-> ${record(agents, (a) => setOf(state.subscribed[a] ?? []))}`,
     `, pstatus |-> ${record(posts, (p) => quote(state.pstatus[p] ?? "absent"))}`,
     `, author |-> ${record(posts, (p) => quote(state.author[p] ?? NONE))}`,
     `, porigin |-> ${record(posts, (p) => quote(state.porigin[p] ?? NONE))}`,
@@ -197,7 +233,7 @@ function tlaEvent(event: BoardEvent | null): string {
     const value = (event as unknown as Record<string, unknown> | null)?.[key];
     return quote(typeof value === "string" ? value : NONE);
   };
-  for (const key of ["agent", "box", "message", "post", "topic", "parent"]) {
+  for (const key of ["agent", "box", "message", "topic", "post", "parent"]) {
     fields.push(`${key} |-> ${get(key)}`);
   }
   return `[ ${fields.join(", ")} ]`;

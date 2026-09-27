@@ -27,9 +27,9 @@ function key(state: AbstractBoardState): string {
   return JSON.stringify([
     agents.map((a) => state.registered[a]),
     agents.map((a) => state.bound[a]),
+    agents.map((a) => state.subscribed[a]),
     boxes.map((b) => state.owner[b]),
     boxes.map((b) => state.mailbox[b]),
-    boxes.map((b) => state.lease[b]),
     messages.map((m) => state.sender[m]),
     messages.map((m) => state.origin[m]),
     messages.map((m) => state.recipient[m]),
@@ -67,7 +67,7 @@ function explore(): { visited: Map<string, AbstractBoardState>; actions: Set<str
   return { visited, actions };
 }
 
-describe("abstract message board (named mailboxes)", () => {
+describe("abstract message board (push delivery)", () => {
   const exploration = explore();
 
   it("never leaves the invariant", () => {
@@ -78,13 +78,13 @@ describe("abstract message board (named mailboxes)", () => {
 
   it("reaches every action", () => {
     expect([...exploration.actions].sort()).toEqual(
-      ["ack", "bind", "post", "reclaim", "recv", "register", "rollback", "send", "unbind"].sort(),
+      ["bind", "deliver", "fail", "post", "register", "send", "subscribe", "unbind", "unsubscribe"].sort(),
     );
   });
 
   it("reaches exactly the state set TLC model-checked", () => {
     const countPath = fileURLToPath(new URL("../spec/.tlc-state-count.json", import.meta.url));
-    expect(existsSync(countPath), "run `pnpm run verify:model` first").toBe(true);
+    expect(existsSync(countPath), "run `node scripts/tla.mjs model` first").toBe(true);
     const { distinctStates } = JSON.parse(readFileSync(countPath, "utf8")) as { distinctStates: number };
     expect(exploration.visited.size).toBe(distinctStates);
   });
@@ -97,24 +97,28 @@ describe("abstract message board (named mailboxes)", () => {
     state = referenceReduceBoardState(state, { type: "send", agent: "a1", box: "bx1", message: "m1" }, BOARD_MODEL);
     expect(state.mstatus["m1"]).toBe("queued");
     expect(state.owner["bx1"]).toBe(null);
-    // A later agent binds the name and drains it.
+    // A later agent binds the name and the runtime delivers the head.
     state = referenceReduceBoardState(state, { type: "bind", agent: "a2", box: "bx1" }, BOARD_MODEL);
-    state = referenceReduceBoardState(state, { type: "recv", agent: "a2", box: "bx1", message: "m1" }, BOARD_MODEL);
-    state = referenceReduceBoardState(state, { type: "ack", agent: "a2", box: "bx1", message: "m1" }, BOARD_MODEL);
-    expect(state.mstatus["m1"]).toBe("acked");
+    state = referenceReduceBoardState(state, { type: "deliver", agent: "a2", box: "bx1", message: "m1" }, BOARD_MODEL);
+    expect(state.mstatus["m1"]).toBe("delivered");
+    expect(state.mailbox["bx1"]).toEqual([]);
   });
 
-  it("models the TTL race: reclaim returns a fetched message", () => {
+  it("fails only the head, preserving queue order", () => {
     let state = initAbstractBoardState(BOARD_MODEL);
     state = referenceReduceBoardState(state, { type: "register", agent: "a1" }, BOARD_MODEL);
-    state = referenceReduceBoardState(state, { type: "register", agent: "a2" }, BOARD_MODEL);
-    state = referenceReduceBoardState(state, { type: "bind", agent: "a2", box: "bx1" }, BOARD_MODEL);
+    state = referenceReduceBoardState(state, { type: "bind", agent: "a1", box: "bx1" }, BOARD_MODEL);
     state = referenceReduceBoardState(state, { type: "send", agent: "a1", box: "bx1", message: "m1" }, BOARD_MODEL);
-    state = referenceReduceBoardState(state, { type: "recv", agent: "a2", box: "bx1", message: "m1" }, BOARD_MODEL);
-    expect(state.mstatus["m1"]).toBe("fetched");
-    state = referenceReduceBoardState(state, { type: "reclaim", box: "bx1" }, BOARD_MODEL);
-    expect(state.mstatus["m1"]).toBe("queued");
-    expect(state.lease["bx1"]).toBe(null);
+    state = referenceReduceBoardState(state, { type: "send", agent: "a1", box: "bx1", message: "m2" }, BOARD_MODEL);
+    expect(guards.fail(state, "bx1", "m2")).toBe(false);
+    expect(guards.fail(state, "bx1", "m1")).toBe(true);
+    state = referenceReduceBoardState(state, { type: "fail", box: "bx1", message: "m1" }, BOARD_MODEL);
+    expect(state.mstatus["m1"]).toBe("failed");
+    expect(state.mailbox["bx1"]).toEqual(["m2"]);
+    state = referenceReduceBoardState(state, { type: "fail", box: "bx1", message: "m2" }, BOARD_MODEL);
+    expect(state.mstatus["m2"]).toBe("failed");
+    expect(state.mailbox["bx1"]).toEqual([]);
+    expect(boardInvariantViolations(state, BOARD_MODEL)).toEqual([]);
   });
 
   it("uses the same MaxClock send guard as the spec", () => {
@@ -126,7 +130,7 @@ describe("abstract message board (named mailboxes)", () => {
     expect(boardInvariantViolations(state, config)).toEqual([]);
   });
 
-  it("checks the typing, strict ordering, lease, and clock strengthenings", () => {
+  it("checks the typing, ordering, placement, subscription, and forum strengthenings", () => {
     let state = initAbstractBoardState(BOARD_MODEL);
     state = referenceReduceBoardState(state, { type: "register", agent: "a1" }, BOARD_MODEL);
     state = referenceReduceBoardState(state, { type: "bind", agent: "a1", box: "bx1" }, BOARD_MODEL);
@@ -136,10 +140,8 @@ describe("abstract message board (named mailboxes)", () => {
     expect(names({ ...state, sentAt: { ...state.sentAt, m2: state.sentAt.m1! } })).toContain("Fifo");
     expect(names({ ...state, clock: 1 })).toContain("SentAtLeClock");
     expect(names({ ...state, sentAt: { ...state.sentAt, m2: 0.5 } })).toContain("TypeOK");
-    state = referenceReduceBoardState(state, { type: "recv", agent: "a1", box: "bx1", message: "m1" }, BOARD_MODEL);
-    expect(names({ ...state, sentAt: { ...state.sentAt, m1: 2 } })).toContain("LeasePrecedes");
-    expect(names({ ...state, mailbox: { bx1: ["m1"] } })).toContain("LeaseNotInMailbox");
-    expect(names({ ...state, mstatus: { ...state.mstatus, m1: "queued" } })).toContain("Placement");
+    expect(names({ ...state, subscribed: { ...state.subscribed, a2: ["t1"] } })).toContain("SubsRegistered");
+    expect(names({ ...state, mailbox: { bx1: [] } })).toContain("Placement");
     expect(names({ ...state, parent: { ...state.parent, p2: "p1" } })).toContain("ParentPosted");
   });
 
@@ -151,29 +153,23 @@ describe("abstract message board (named mailboxes)", () => {
     expect(boardInvariantViolations(corrupt, BOARD_MODEL).map((v) => v.invariant)).toContain("QueueRecipient");
   });
 
-  it("counts an outstanding lease against mailbox capacity", () => {
-    // The 2-message fixture cannot reach this: once m1 is leased there is no
-    // third message to refill the queue. With three messages, the old counting
-    // (queue length only) let unbind/rollback/reclaim push the queue past Cap.
+  it("bounds the mailbox and drains it by delivery, not by requeue", () => {
     const config = { ...BOARD_MODEL, messages: ["m1", "m2", "m3"] };
     let state = initAbstractBoardState(config);
     state = referenceReduceBoardState(state, { type: "register", agent: "a1" }, config);
     state = referenceReduceBoardState(state, { type: "bind", agent: "a1", box: "bx1" }, config);
     state = referenceReduceBoardState(state, { type: "send", agent: "a1", box: "bx1", message: "m1" }, config);
     state = referenceReduceBoardState(state, { type: "send", agent: "a1", box: "bx1", message: "m2" }, config);
-    state = referenceReduceBoardState(state, { type: "recv", agent: "a1", box: "bx1", message: "m1" }, config);
-    expect(state.mailbox["bx1"]).toEqual(["m2"]);
-    expect(state.lease["bx1"]).toBe("m1");
-    // one queued + one leased = Cap, so a third send is not enabled ...
+    // Two queued = Cap, so a third send is not enabled ...
     expect(guards.send(state, config, "a1", "bx1", "m3")).toBe(false);
     expect(() =>
       referenceReduceBoardState(state, { type: "send", agent: "a1", box: "bx1", message: "m3" }, config),
     ).toThrow();
-    // ... and returning the lease keeps the queue within capacity.
-    const unbound = referenceReduceBoardState(state, { type: "unbind", agent: "a1" }, config);
-    expect(unbound.mailbox["bx1"]).toEqual(["m1", "m2"]);
+    // ... until the head is delivered.
+    state = referenceReduceBoardState(state, { type: "deliver", agent: "a1", box: "bx1", message: "m1" }, config);
+    expect(state.mailbox["bx1"]).toEqual(["m2"]);
+    expect(guards.send(state, config, "a1", "bx1", "m3")).toBe(true);
     expect(boardInvariantViolations(state, config)).toEqual([]);
-    expect(boardInvariantViolations(unbound, config)).toEqual([]);
   });
 
   it("excludes a second binder of the same name", () => {
@@ -184,5 +180,17 @@ describe("abstract message board (named mailboxes)", () => {
     expect(() =>
       referenceReduceBoardState(state, { type: "bind", agent: "a2", box: "bx1" }, BOARD_MODEL),
     ).toThrow();
+  });
+
+  it("subscribes the author on post and honors explicit unsubscribe", () => {
+    let state = initAbstractBoardState(BOARD_MODEL);
+    state = referenceReduceBoardState(state, { type: "register", agent: "a1" }, BOARD_MODEL);
+    state = referenceReduceBoardState(state, { type: "post", agent: "a1", post: "p1", topic: "t1", parent: null }, BOARD_MODEL);
+    expect(state.subscribed["a1"]).toEqual(["t1"]);
+    state = referenceReduceBoardState(state, { type: "unsubscribe", agent: "a1", topic: "t1" }, BOARD_MODEL);
+    expect(state.subscribed["a1"]).toEqual([]);
+    state = referenceReduceBoardState(state, { type: "post", agent: "a1", post: "p2", topic: "t1", parent: "p1" }, BOARD_MODEL);
+    expect(state.subscribed["a1"]).toEqual(["t1"]);
+    expect(boardInvariantViolations(state, BOARD_MODEL)).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * The reducer (named-mailbox revision).
+ * The reducer (push revision).
  *
  * Every machine transition is `referenceReduceBoardState`, the executable model
  * TLC proves safe. `isEnabled` is the single source of truth for "is this
@@ -16,24 +16,25 @@ import {
   type BoxId,
   type MessageId,
   type PostId,
+  type TopicId,
 } from "../formal/model.ts";
 import { boardConfigOf, type BoardState } from "./board.ts";
 
-/** A command the model-facing tool can issue. */
+/** A command the delivery machinery or the model-facing tool can issue. */
 export type BoardCommand =
   | { readonly type: "register"; readonly agent: AgentId }
   | { readonly type: "bind"; readonly agent: AgentId; readonly box: BoxId }
   | { readonly type: "unbind"; readonly agent: AgentId }
   | { readonly type: "send"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId; readonly body: string }
-  | { readonly type: "recv"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
-  | { readonly type: "ack"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
-  | { readonly type: "rollback"; readonly agent: AgentId; readonly box: BoxId }
-  | { readonly type: "reclaim"; readonly box: BoxId }
+  | { readonly type: "deliver"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
+  | { readonly type: "fail"; readonly box: BoxId; readonly message: MessageId }
+  | { readonly type: "subscribe"; readonly agent: AgentId; readonly topic: TopicId }
+  | { readonly type: "unsubscribe"; readonly agent: AgentId; readonly topic: TopicId }
   | {
       readonly type: "post";
       readonly agent: AgentId;
       readonly post: PostId;
-      readonly topic: string;
+      readonly topic: TopicId;
       readonly subject: string;
       readonly body: string;
       readonly parent: PostId | null;
@@ -56,14 +57,14 @@ export function eventsForCommand(command: BoardCommand): BoardEvent[] {
       return [{ type: "unbind", agent: command.agent }];
     case "send":
       return [{ type: "send", agent: command.agent, box: command.box, message: command.message }];
-    case "recv":
-      return [{ type: "recv", agent: command.agent, box: command.box, message: command.message }];
-    case "ack":
-      return [{ type: "ack", agent: command.agent, box: command.box, message: command.message }];
-    case "rollback":
-      return [{ type: "rollback", agent: command.agent, box: command.box }];
-    case "reclaim":
-      return [{ type: "reclaim", box: command.box }];
+    case "deliver":
+      return [{ type: "deliver", agent: command.agent, box: command.box, message: command.message }];
+    case "fail":
+      return [{ type: "fail", box: command.box, message: command.message }];
+    case "subscribe":
+      return [{ type: "subscribe", agent: command.agent, topic: command.topic }];
+    case "unsubscribe":
+      return [{ type: "unsubscribe", agent: command.agent, topic: command.topic }];
     case "post":
       return [
         {
@@ -81,11 +82,11 @@ function configFor(state: BoardState, event: BoardEvent): ReturnType<typeof boar
   switch (event.type) {
     case "bind":
     case "send":
-    case "recv":
-    case "ack":
-    case "rollback":
-    case "reclaim":
+    case "deliver":
+    case "fail":
       return boardConfigOf(state, { box: event.box });
+    case "subscribe":
+    case "unsubscribe":
     case "post":
       return boardConfigOf(state, { topic: event.topic });
     default:
@@ -105,14 +106,14 @@ export function isEnabled(state: BoardState, event: BoardEvent): boolean {
       return guards.unbind(state, event.agent);
     case "send":
       return guards.send(state, config, event.agent, event.box, event.message);
-    case "recv":
-      return guards.recv(state, event.agent, event.box, event.message);
-    case "ack":
-      return guards.ack(state, event.agent, event.box, event.message);
-    case "rollback":
-      return guards.rollback(state, event.agent, event.box);
-    case "reclaim":
-      return guards.reclaim(state, event.box);
+    case "deliver":
+      return guards.deliver(state, event.agent, event.box, event.message);
+    case "fail":
+      return guards.fail(state, event.box, event.message);
+    case "subscribe":
+      return guards.subscribe(state, config, event.agent, event.topic);
+    case "unsubscribe":
+      return guards.unsubscribe(state, event.agent, event.topic);
     case "post":
       return guards.post(state, config, event.agent, event.post, event.topic, event.parent);
   }

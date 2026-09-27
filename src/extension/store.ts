@@ -1,15 +1,17 @@
 /**
- * The board store (named-mailbox revision).
+ * The board store (push revision).
  *
- * Mutations run under the backend lock as read-modify-write against the durable
- * board. Read operations refresh first, so a process sees other processes'
- * writes. Mailboxes are named: an agent binds a name to serve it, and a name
- * that stays unbound is a durable inbox that a later session can drain.
+ * Mutations run on the backend as read-modify-write against the durable board.
+ * Read operations refresh first, so a process sees other processes' writes.
+ * Mailboxes are named: an agent binds a name to serve it, and a name that stays
+ * unbound is a durable inbox that a later session can drain. Delivery and
+ * failure are applied by the runtime when it injects, or gives up on, a
+ * message; there is no agent-facing fetch/ack handshake.
  */
 
 import { randomUUID } from "node:crypto";
 import { boardViolations, projectBoard, type BoardProjection, type BoardState } from "../engine/board.ts";
-import { isEnabled, reduceBoardCommand, type BoardCommand } from "../engine/reducer.ts";
+import { reduceBoardCommand, type BoardCommand } from "../engine/reducer.ts";
 import { BoardStateError } from "../formal/model.ts";
 import type { BoardBackend } from "./persistence.ts";
 import { ensureBoard, MemoryBoardBackend } from "./persistence.ts";
@@ -25,15 +27,16 @@ export class BoardOperationError extends Error {
   }
 }
 
-/** One queued message as seen without fetching it. */
+/** One queued message as seen without delivering it. */
 export interface InboxEntry {
   readonly id: string;
   readonly from: string | null;
   readonly preview: string;
 }
 
-/** A fetched message with its body. */
-export interface FetchedMessage {
+/** One message the local runtime should inject next. */
+export interface PendingDelivery {
+  readonly box: string;
   readonly id: string;
   readonly from: string | null;
   readonly body: string;
@@ -84,7 +87,7 @@ export class BoardStore {
     return this.#apply({ type: "bind", agent, box });
   }
 
-  /** Release the served name, returning any fetched message to its queue. */
+  /** Release the served name; its queued messages wait for a new owner. */
   public unbind(agent: string): BoardState {
     this.refresh();
     return this.#apply({ type: "unbind", agent });
@@ -99,54 +102,36 @@ export class BoardStore {
     return { message, state: result };
   }
 
-  /** Fetch the head of a named mailbox, without acking it. */
-  public recv(agent: string, box?: string): { state: BoardState; message: FetchedMessage | null; reason?: string } {
+  /**
+   * Mark a message delivered. The runtime calls this **after** it has injected
+   * the message into the agent's context: a crash in between leaves the message
+   * queued, so it is redelivered (duplicates are possible, loss is not).
+   */
+  public deliver(agent: string, box: string, message: string): BoardState {
     this.refresh();
-    const name = this.#resolveBox(agent, box);
-    const queue = this.#state.mailbox[name] ?? [];
-    if (queue.length === 0) return { state: this.#state, message: null, reason: "mailbox-empty" };
-    const message = queue[0]!;
-    const state = this.#apply({ type: "recv", agent, box: name, message });
-    return {
-      state,
-      message: {
-        id: message,
-        from: this.#state.sender[message] ?? null,
-        body: this.#state.bodies[message] ?? "",
-      },
-    };
+    return this.#apply({ type: "deliver", agent, box, message });
   }
 
-  /** Acknowledge a fetched message: the POP3 commit. */
-  public ack(agent: string, box: string, message: string): BoardState {
+  /** Mark a message failed (expiry or injection error) and report the reason. */
+  public fail(box: string, message: string): BoardState {
     this.refresh();
-    return this.#apply({ type: "ack", agent, box, message });
+    return this.#apply({ type: "fail", box, message });
   }
 
-  /** Acknowledge every message the caller has fetched from its bound mailbox. */
-  public ackAll(agent: string): BoardState {
+  /** Watch a topic; posting in a topic subscribes the author automatically. */
+  public subscribe(agent: string, topic: string): BoardState {
     this.refresh();
-    const name = this.#resolveBox(agent);
-    const message = this.#state.lease[name] ?? null;
-    if (message !== null && isEnabled(this.#state, { type: "ack", agent, box: name, message })) {
-      this.#apply({ type: "ack", agent, box: name, message });
-    }
-    return this.#state;
+    if (topic.trim().length === 0) throw new BoardOperationError("board-empty-topic", "topic is required");
+    return this.#apply({ type: "subscribe", agent, topic });
   }
 
-  /** Abandon the fetch without acking; the head returns to the queue. */
-  public rollback(agent: string, box: string): BoardState {
+  /** Stop watching a topic. */
+  public unsubscribe(agent: string, topic: string): BoardState {
     this.refresh();
-    return this.#apply({ type: "rollback", agent, box });
+    return this.#apply({ type: "unsubscribe", agent, topic });
   }
 
-  /** Revoke a lease (the runtime trigger for TTL expiry). */
-  public reclaim(box: string): BoardState {
-    this.refresh();
-    return this.#apply({ type: "reclaim", box });
-  }
-
-  /** List queued messages of a named mailbox without fetching them. */
+  /** List queued messages of a named mailbox without delivering them. */
   public inbox(box: string): InboxEntry[] {
     this.refresh();
     return (this.#state.mailbox[box] ?? []).map((id) => ({
@@ -154,6 +139,25 @@ export class BoardStore {
       from: this.#state.sender[id] ?? null,
       preview: (this.#state.bodies[id] ?? "").slice(0, 120),
     }));
+  }
+
+  /** The heads of every mailbox this agent serves, ready to inject. */
+  public pending(agent: string): PendingDelivery[] {
+    this.refresh();
+    const out: PendingDelivery[] = [];
+    for (const [box, queue] of Object.entries(this.#state.mailbox)) {
+      if (this.#state.owner[box] !== agent) continue;
+      const id = queue[0];
+      if (id === undefined) continue;
+      out.push({ box, id, from: this.#state.sender[id] ?? null, body: this.#state.bodies[id] ?? "" });
+    }
+    return out;
+  }
+
+  /** The topics an agent watches. */
+  public subscriptions(agent: string): readonly string[] {
+    this.refresh();
+    return this.#state.subscribed[agent] ?? [];
   }
 
   /** Append a post to the forum. */
@@ -208,15 +212,6 @@ export class BoardStore {
   public boundBox(agent: string): string | null {
     this.refresh();
     return this.#state.bound[agent] ?? null;
-  }
-
-  #resolveBox(agent: string, box?: string): string {
-    if (box !== undefined && box.length > 0) return box;
-    const bound = this.#state.bound[agent] ?? null;
-    if (bound === null) {
-      throw new BoardOperationError("board-unbound", `${agent} serves no mailbox; bind one or pass box`);
-    }
-    return bound;
   }
 
   #requireRegistered(agent: string): void {

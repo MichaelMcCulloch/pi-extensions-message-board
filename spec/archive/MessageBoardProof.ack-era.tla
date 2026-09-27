@@ -1,4 +1,8 @@
 ---------------------- MODULE MessageBoardProof ----------------------
+\* ARCHIVED: this inductive proof covers the ack-era revision of the board
+\* (leases, fetch/ack/rollback/reclaim), whose spec is in git history at
+\* commit 7147f70. The push revision replaced that transition relation and this
+\* proof must be re-derived against it; see DESIGN-bus.md. Not part of CI.
 \* The inductive safety proof for the parameterized MessageBoard.
 \*
 \* `Init => Inv` and every action preserves every invariant component, so

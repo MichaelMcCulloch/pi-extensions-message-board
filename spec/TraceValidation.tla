@@ -1,5 +1,5 @@
 ------------------------- MODULE TraceValidation --------------------------
-\* Replay implementation traces against the verified named-mailbox machine.
+\* Replay implementation traces against the verified push-delivery machine.
 \* `spec/generated/TracesData.tla` defines `Traces`; each trace step names an
 \* action and the state the model should be in afterwards. A disabled action
 \* sets `error`, rejected by `TraceInv` with a counterexample naming the step.
@@ -15,35 +15,35 @@ state ==
     [ registered |-> registered, bound |-> bound, owner |-> owner,
       sender |-> sender, origin |-> origin, recipient |-> recipient,
       sentAt |-> sentAt, mstatus |-> mstatus, mailbox |-> mailbox,
-      lease |-> lease, pstatus |-> pstatus, author |-> author,
+      subscribed |-> subscribed, pstatus |-> pstatus, author |-> author,
       porigin |-> porigin, parent |-> parent, topic |-> topic,
       posted |-> posted, clock |-> clock ]
 
 machineVars == <<registered, bound, owner, sender, origin, recipient, sentAt,
-                mstatus, mailbox, lease, pstatus, author, porigin, parent,
+                mstatus, mailbox, subscribed, pstatus, author, porigin, parent,
                 topic, posted, clock>>
 
 ActionOf(ev) ==
-    \/ (ev.type = "register" /\ Register(ev.agent))
-    \/ (ev.type = "bind"     /\ Bind(ev.agent, ev.box))
-    \/ (ev.type = "unbind"   /\ Unbind(ev.agent))
-    \/ (ev.type = "send"     /\ Send(ev.agent, ev.box, ev.message))
-    \/ (ev.type = "recv"     /\ Recv(ev.agent, ev.box, ev.message))
-    \/ (ev.type = "ack"      /\ Ack(ev.agent, ev.box, ev.message))
-    \/ (ev.type = "rollback" /\ Rollback(ev.agent, ev.box))
-    \/ (ev.type = "reclaim"  /\ Reclaim(ev.box))
-    \/ (ev.type = "post"     /\ Post(ev.agent, ev.post, ev.topic, ev.parent))
+    \/ (ev.type = "register"    /\ Register(ev.agent))
+    \/ (ev.type = "bind"        /\ Bind(ev.agent, ev.box))
+    \/ (ev.type = "unbind"      /\ Unbind(ev.agent))
+    \/ (ev.type = "send"        /\ Send(ev.agent, ev.box, ev.message))
+    \/ (ev.type = "deliver"     /\ Deliver(ev.agent, ev.box, ev.message))
+    \/ (ev.type = "fail"        /\ Fail(ev.box, ev.message))
+    \/ (ev.type = "subscribe"   /\ Subscribe(ev.agent, ev.topic))
+    \/ (ev.type = "unsubscribe" /\ Unsubscribe(ev.agent, ev.topic))
+    \/ (ev.type = "post"        /\ Post(ev.agent, ev.post, ev.topic, ev.parent))
 
 GuardOf(ev) ==
-    \/ (ev.type = "register" /\ GuardRegister(ev.agent))
-    \/ (ev.type = "bind"     /\ GuardBind(ev.agent, ev.box))
-    \/ (ev.type = "unbind"   /\ GuardUnbind(ev.agent))
-    \/ (ev.type = "send"     /\ GuardSend(ev.agent, ev.box, ev.message))
-    \/ (ev.type = "recv"     /\ GuardRecv(ev.agent, ev.box, ev.message))
-    \/ (ev.type = "ack"      /\ GuardAck(ev.agent, ev.box, ev.message))
-    \/ (ev.type = "rollback" /\ GuardRollback(ev.agent, ev.box))
-    \/ (ev.type = "reclaim"  /\ GuardReclaim(ev.box))
-    \/ (ev.type = "post"     /\ GuardPost(ev.agent, ev.post, ev.topic, ev.parent))
+    \/ (ev.type = "register"    /\ GuardRegister(ev.agent))
+    \/ (ev.type = "bind"        /\ GuardBind(ev.agent, ev.box))
+    \/ (ev.type = "unbind"      /\ GuardUnbind(ev.agent))
+    \/ (ev.type = "send"        /\ GuardSend(ev.agent, ev.box, ev.message))
+    \/ (ev.type = "deliver"     /\ GuardDeliver(ev.agent, ev.box, ev.message))
+    \/ (ev.type = "fail"        /\ GuardFail(ev.box, ev.message))
+    \/ (ev.type = "subscribe"   /\ GuardSubscribe(ev.agent, ev.topic))
+    \/ (ev.type = "unsubscribe" /\ GuardUnsubscribe(ev.agent, ev.topic))
+    \/ (ev.type = "post"        /\ GuardPost(ev.agent, ev.post, ev.topic, ev.parent))
 
 AssignState(s) ==
     /\ registered = s.registered
@@ -55,7 +55,7 @@ AssignState(s) ==
     /\ sentAt = s.sentAt
     /\ mstatus = s.mstatus
     /\ mailbox = s.mailbox
-    /\ lease = s.lease
+    /\ subscribed = s.subscribed
     /\ pstatus = s.pstatus
     /\ author = s.author
     /\ porigin = s.porigin

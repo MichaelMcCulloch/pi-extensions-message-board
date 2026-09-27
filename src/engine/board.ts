@@ -1,5 +1,5 @@
 /**
- * Durable board state (named-mailbox revision).
+ * Durable board state (push revision).
  *
  * Mailboxes are keyed by a durable name, and an agent binds a name to serve it.
  * Production state extends the verified abstract state with payloads and a
@@ -16,6 +16,7 @@ import {
   type BoxId,
   type MessageId,
   type PostId,
+  type TopicId,
 } from "../formal/model.ts";
 
 /** Capacity of a named mailbox. */
@@ -48,7 +49,6 @@ export function initBoardState(): BoardState {
   };
 }
 
-/** Derive the model config for a live state, admitting a new box or topic. */
 /**
  * Project durable state onto the verified abstract vocabulary. The production
  * state extends the abstract state, so the projection is the state itself; the
@@ -58,17 +58,16 @@ export function abstractBoardState(state: BoardState): AbstractBoardState {
   return state;
 }
 
-export function boardConfigOf(state: BoardState, extra?: { box?: BoxId; topic?: string }): BoardModelConfig {
-  const boxes = new Set<BoxId>([
-    ...Object.keys(state.owner),
-    ...Object.keys(state.mailbox),
-    ...Object.keys(state.lease),
-  ]);
+export function boardConfigOf(state: BoardState, extra?: { box?: BoxId; topic?: TopicId }): BoardModelConfig {
+  const boxes = new Set<BoxId>([...Object.keys(state.owner), ...Object.keys(state.mailbox)]);
   if (extra?.box !== undefined) boxes.add(extra.box);
-  const topics = new Set<string>();
+  const topics = new Set<TopicId>();
   for (const post of Object.keys(state.topic)) {
     const value = state.topic[post];
     if (value != null) topics.add(value);
+  }
+  for (const agent of Object.keys(state.subscribed)) {
+    for (const topic of state.subscribed[agent] ?? []) topics.add(topic);
   }
   if (extra?.topic !== undefined) topics.add(extra.topic);
   return {
@@ -91,8 +90,18 @@ export function boardViolations(state: BoardState): BoardViolation[] {
 /** A read-only projection of the board. */
 export interface BoardProjection {
   readonly revision: number;
-  readonly agents: readonly { readonly id: AgentId; readonly box: BoxId | null }[];
-  readonly boxes: readonly { readonly name: BoxId; readonly owner: AgentId | null; readonly queued: number; readonly lease: MessageId | null }[];
+  readonly agents: readonly {
+    readonly id: AgentId;
+    readonly box: BoxId | null;
+    readonly subscribed: readonly TopicId[];
+  }[];
+  readonly boxes: readonly {
+    readonly name: BoxId;
+    readonly owner: AgentId | null;
+    readonly queued: number;
+    readonly delivered: number;
+    readonly failed: number;
+  }[];
   readonly messages: readonly {
     readonly id: MessageId;
     readonly status: string;
@@ -101,7 +110,7 @@ export interface BoardProjection {
   }[];
   readonly posts: readonly {
     readonly id: PostId;
-    readonly topic: string;
+    readonly topic: TopicId;
     readonly parent: PostId | null;
     readonly author: AgentId | null;
     readonly subject: string;
@@ -110,16 +119,24 @@ export interface BoardProjection {
 
 /** Derive the board projection. */
 export function projectBoard(state: BoardState): BoardProjection {
-  const boxes = [...new Set([...Object.keys(state.owner), ...Object.keys(state.mailbox), ...Object.keys(state.lease)])];
+  const boxes = [...new Set([...Object.keys(state.owner), ...Object.keys(state.mailbox)])];
   return {
     revision: state.revision,
-    agents: Object.keys(state.registered).map((id) => ({ id, box: state.bound[id] ?? null })),
-    boxes: boxes.map((name) => ({
-      name,
-      owner: state.owner[name] ?? null,
-      queued: state.mailbox[name]?.length ?? 0,
-      lease: state.lease[name] ?? null,
+    agents: Object.keys(state.registered).map((id) => ({
+      id,
+      box: state.bound[id] ?? null,
+      subscribed: state.subscribed[id] ?? [],
     })),
+    boxes: boxes.map((name) => {
+      const messages = Object.keys(state.mstatus).filter((id) => state.recipient[id] === name);
+      return {
+        name,
+        owner: state.owner[name] ?? null,
+        queued: state.mailbox[name]?.length ?? 0,
+        delivered: messages.filter((id) => state.mstatus[id] === "delivered").length,
+        failed: messages.filter((id) => state.mstatus[id] === "failed").length,
+      };
+    }),
     messages: Object.keys(state.mstatus).map((id) => ({
       id,
       status: state.mstatus[id]!,

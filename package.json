@@ -15,7 +15,7 @@
     "verify:model": "node scripts/tla.mjs model",
     "verify:traces": "node scripts/tla.mjs traces",
     "verify:formal": "node scripts/tla.mjs all",
-    "verify": "pnpm run typecheck && pnpm run test && pnpm run verify:formal && pnpm run verify:proof",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run verify:formal",
     "verify:proof": "node scripts/tlapm.mjs"
   },
   "keywords": [

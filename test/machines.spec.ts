@@ -18,6 +18,7 @@ describe("machine vocabulary", () => {
       "MailboxMachine",
       "MessageMachine",
       "RegistryMachine",
+      "SubscriptionMachine",
     ]);
   });
 });

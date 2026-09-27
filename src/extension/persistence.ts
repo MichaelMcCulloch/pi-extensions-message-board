@@ -188,15 +188,16 @@ export function boardPath(cwd: string, board = "default"): string {
 export function ensureBoard(state: BoardState | null): BoardState {
   if (state === null) return initBoardState();
   const base = initBoardState();
-  // Snapshots written by older versions can omit whole fields (`owner` and
-  // `lease` did not exist before unbound sends were tracked), not just per-id
-  // entries. Rebuild every map from the ids the snapshot does carry, then fill
-  // the missing entries with the same defaults `initAbstractBoardState` uses.
+  // Snapshots written by older versions can omit whole fields (`owner`,
+  // `subscribed`, and the dropped `lease` did not always exist), not just
+  // per-id entries. Rebuild every map from the ids the snapshot does carry,
+  // then fill the missing entries with the same defaults
+  // `initAbstractBoardState` uses.
   const registered = { ...(state.registered ?? {}) };
   const bound = { ...(state.bound ?? {}) };
   const owner = { ...(state.owner ?? {}) };
   const mailbox = { ...(state.mailbox ?? {}) };
-  const lease = { ...(state.lease ?? {}) };
+  const subscribed = { ...(state.subscribed ?? {}) } as Record<string, readonly string[]>;
   const sender = { ...(state.sender ?? {}) };
   const origin = { ...(state.origin ?? {}) };
   const recipient = { ...(state.recipient ?? {}) };
@@ -208,14 +209,14 @@ export function ensureBoard(state: BoardState | null): BoardState {
   const parent = { ...(state.parent ?? {}) };
   const topic = { ...(state.topic ?? {}) };
 
-  for (const agent of new Set([...Object.keys(registered), ...Object.keys(bound)])) {
+  for (const agent of new Set([...Object.keys(registered), ...Object.keys(bound), ...Object.keys(subscribed)])) {
     if (registered[agent] === undefined) registered[agent] = false;
     if (bound[agent] === undefined) bound[agent] = null;
+    if (subscribed[agent] === undefined) subscribed[agent] = [];
   }
-  for (const box of new Set([...Object.keys(mailbox), ...Object.keys(owner), ...Object.keys(lease)])) {
+  for (const box of new Set([...Object.keys(mailbox), ...Object.keys(owner)])) {
     if (mailbox[box] === undefined) mailbox[box] = [];
     if (owner[box] === undefined) owner[box] = null;
-    if (lease[box] === undefined) lease[box] = null;
   }
   for (const message of new Set([...Object.keys(mstatus), ...Object.keys(sender), ...Object.keys(origin), ...Object.keys(recipient), ...Object.keys(sentAt)])) {
     if (mstatus[message] === undefined) mstatus[message] = "absent";
@@ -238,7 +239,7 @@ export function ensureBoard(state: BoardState | null): BoardState {
     bound,
     owner,
     mailbox,
-    lease,
+    subscribed,
     sender,
     origin,
     recipient,
