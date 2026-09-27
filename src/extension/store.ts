@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { boardViolations, projectBoard, type BoardProjection, type BoardState } from "../engine/board.ts";
 import { reduceBoardCommand, type BoardCommand } from "../engine/reducer.ts";
 import { BoardStateError } from "../formal/model.ts";
-import type { BoardBackend } from "./persistence.ts";
+import type { BoardBackend, DeliveryLedger } from "./persistence.ts";
 import { ensureBoard, MemoryBoardBackend } from "./persistence.ts";
 
 /** A store error carrying a stable code. */
@@ -45,10 +45,12 @@ export interface PendingDelivery {
 /** The board store. */
 export class BoardStore {
   readonly #backend: BoardBackend;
+  readonly #ledger: DeliveryLedger;
   #state: BoardState;
 
   public constructor(backend: BoardBackend) {
     this.#backend = backend;
+    this.#ledger = backend.ledger;
     this.#state = ensureBoard(backend.read());
   }
 
@@ -94,11 +96,19 @@ export class BoardStore {
   }
 
   /** Enqueue a direct message to a named mailbox; the sender is the actor. */
-  public send(agent: string, box: string, body: string, explicitId?: string): { message: string; state: BoardState } {
+  public send(
+    agent: string,
+    box: string,
+    body: string,
+    explicitId?: string,
+    ttlMs?: number,
+  ): { message: string; state: BoardState } {
     this.refresh();
     this.#requireRegistered(agent);
     const message = explicitId ?? `m-${randomUUID().slice(0, 8)}`;
     const result = this.#apply({ type: "send", agent, box, message, body });
+    const now = Date.now();
+    this.#ledger.record(message, now, ttlMs === undefined ? null : now + ttlMs);
     return { message, state: result };
   }
 
@@ -113,9 +123,46 @@ export class BoardStore {
   }
 
   /** Mark a message failed (expiry or injection error) and report the reason. */
-  public fail(box: string, message: string): BoardState {
+  public fail(box: string, message: string, reason = "failed"): BoardState {
     this.refresh();
-    return this.#apply({ type: "fail", box, message });
+    const state = this.#apply({ type: "fail", box, message });
+    this.#ledger.setReason(message, reason);
+    return state;
+  }
+
+  /**
+   * Fail every queued message whose deadline has passed. Called by the runtime
+   * janitor; the ledger owns the clock, the model owns the transition.
+   */
+  public expire(now = Date.now()): readonly string[] {
+    const expired: string[] = [];
+    for (const message of this.#ledger.due(now)) {
+      this.refresh();
+      if (this.#state.mstatus[message] !== "queued") continue;
+      const box = this.#state.recipient[message];
+      if (typeof box !== "string") continue;
+      this.#apply({ type: "fail", box, message });
+      this.#ledger.setReason(message, "expired");
+      expired.push(message);
+    }
+    return expired;
+  }
+
+  /** Failures this agent sent that have not yet been reported to it. */
+  public outboundFailures(agent: string): readonly { id: string; box: string | null; reason: string | null }[] {
+    this.refresh();
+    const out: { id: string; box: string | null; reason: string | null }[] = [];
+    for (const [id, status] of Object.entries(this.#state.mstatus)) {
+      if (status !== "failed" || this.#state.sender[id] !== agent) continue;
+      if (this.#ledger.notifiedAt(id) !== null) continue;
+      out.push({ id, box: this.#state.recipient[id] ?? null, reason: this.#ledger.reason(id) });
+    }
+    return out;
+  }
+
+  /** Record that the sender has been told about a failure. */
+  public markFailureNotified(message: string): void {
+    this.#ledger.markNotified(message, Date.now());
   }
 
   /** Watch a topic; posting in a topic subscribes the author automatically. */

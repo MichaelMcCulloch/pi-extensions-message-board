@@ -2,29 +2,71 @@
  * Board persistence.
  *
  * The board must be shared by agents running in different pi processes, so the
- * durable store is a file guarded by a lock file. Every mutation re-reads the
- * current board under the lock, applies one command, and atomically replaces the
- * file, so two processes cannot lose each other's messages. Tests use the
- * in-memory backend, which shares the same interface without the filesystem.
+ * durable store is a single SQLite file (see `sqlite.ts`). This module owns the
+ * backend contract, the in-memory backend tests use, the repository-scoped
+ * location, and the one-time import of ack-era JSON boards.
  */
 
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { initBoardState, type BoardState } from "../engine/board.ts";
+import type { MessageStatus } from "../formal/model.ts";
+
+/**
+ * Operational delivery metadata: deadlines, failure reasons, and which failure
+ * notices were already injected. Deliberately NOT part of `BoardState` — the
+ * verified state does not model clocks, and the state writer must not rewrite
+ * this table. Both backends provide one.
+ */
+export interface DeliveryLedger {
+  /** Record a freshly queued message; `deadlineAt` is null when it waits forever. */
+  record(message: string, createdAt: number, deadlineAt: number | null): void;
+  /** Messages whose deadline has passed by `now`. */
+  due(now: number): readonly string[];
+  /** The failure reason, or null. */
+  reason(message: string): string | null;
+  setReason(message: string, reason: string): void;
+  /** When the sender was told, or null. */
+  notifiedAt(message: string): number | null;
+  markNotified(message: string, at: number): void;
+}
+
+/** An in-process ledger for tests and single-process use. */
+export class MemoryDeliveryLedger implements DeliveryLedger {
+  readonly #entries = new Map<string, { createdAt: number; deadlineAt: number | null; reason: string | null; notifiedAt: number | null }>();
+
+  public record(message: string, createdAt: number, deadlineAt: number | null): void {
+    this.#entries.set(message, { createdAt, deadlineAt, reason: null, notifiedAt: null });
+  }
+
+  public due(now: number): readonly string[] {
+    return [...this.#entries]
+      .filter(([, entry]) => entry.deadlineAt !== null && entry.deadlineAt <= now)
+      .map(([message]) => message);
+  }
+
+  public reason(message: string): string | null {
+    return this.#entries.get(message)?.reason ?? null;
+  }
+
+  public setReason(message: string, reason: string): void {
+    const entry = this.#entries.get(message);
+    if (entry !== undefined) entry.reason = reason;
+  }
+
+  public notifiedAt(message: string): number | null {
+    return this.#entries.get(message)?.notifiedAt ?? null;
+  }
+
+  public markNotified(message: string, at: number): void {
+    const entry = this.#entries.get(message);
+    if (entry !== undefined) entry.notifiedAt = at;
+  }
+}
 
 /** The durable backend the store mutates through. */
 export interface BoardBackend {
+  readonly ledger: DeliveryLedger;
   read(): BoardState | null;
   write(state: BoardState): void;
   lock<T>(operation: () => T): T;
@@ -33,6 +75,7 @@ export interface BoardBackend {
 /** An in-process backend for tests and single-process use. */
 export class MemoryBoardBackend implements BoardBackend {
   #state: BoardState | null;
+  public readonly ledger = new MemoryDeliveryLedger();
 
   public constructor(initial: BoardState | null = null) {
     this.#state = initial;
@@ -48,96 +91,6 @@ export class MemoryBoardBackend implements BoardBackend {
 
   public lock<T>(operation: () => T): T {
     return operation();
-  }
-}
-
-const LOCK_STALE_MS = 5_000;
-const LOCK_RETRY_MS = 5;
-const LOCK_TIMEOUT_MS = 5_000;
-
-/** Tunables for the file backend's advisory lock. */
-export interface FileBackendOptions {
-  readonly lockStaleMs?: number;
-  readonly lockTimeoutMs?: number;
-  readonly lockRetryMs?: number;
-}
-
-function sleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * A file backend with a best-effort advisory lock.
- *
- * `write` goes through a temporary file and a rename so a crash cannot leave a
- * half-written board. The lock is a sibling `*.lock` file; a lock older than
- * {@link LOCK_STALE_MS} is treated as a crashed holder and reclaimed.
- */
-export class FileBoardBackend implements BoardBackend {
-  readonly #path: string;
-  readonly #lockPath: string;
-  readonly #lockStaleMs: number;
-  readonly #lockTimeoutMs: number;
-  readonly #lockRetryMs: number;
-
-  public constructor(path: string, options: FileBackendOptions = {}) {
-    this.#path = path;
-    this.#lockPath = `${path}.lock`;
-    this.#lockStaleMs = options.lockStaleMs ?? LOCK_STALE_MS;
-    this.#lockTimeoutMs = options.lockTimeoutMs ?? LOCK_TIMEOUT_MS;
-    this.#lockRetryMs = options.lockRetryMs ?? LOCK_RETRY_MS;
-    mkdirSync(dirname(path), { recursive: true });
-  }
-
-  public read(): BoardState | null {
-    if (!existsSync(this.#path)) return null;
-    const raw = readFileSync(this.#path, "utf8");
-    if (raw.trim().length === 0) return null;
-    try {
-      return JSON.parse(raw) as BoardState;
-    } catch {
-      // A corrupt artifact must not be silently treated as an empty board: it
-      // is quarantined beside the log so the data survives and the board starts
-      // from a clean file.
-      renameSync(this.#path, `${this.#path}.corrupt-${Date.now()}`);
-      return null;
-    }
-  }
-
-  public write(state: BoardState): void {
-    const temporary = `${this.#path}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(state));
-    renameSync(temporary, this.#path);
-  }
-
-  public lock<T>(operation: () => T): T {
-    const started = Date.now();
-    for (;;) {
-      try {
-        closeSync(openSync(this.#lockPath, "wx"));
-        break;
-      } catch {
-        if (existsSync(this.#lockPath)) {
-          try {
-            if (Date.now() - statSync(this.#lockPath).mtimeMs > this.#lockStaleMs) {
-              rmSync(this.#lockPath, { force: true });
-              continue;
-            }
-          } catch {
-            continue;
-          }
-        }
-        if (Date.now() - started > this.#lockTimeoutMs) {
-          throw new Error(`timed out acquiring ${this.#lockPath}`);
-        }
-        sleep(this.#lockRetryMs);
-      }
-    }
-    try {
-      return operation();
-    } finally {
-      rmSync(this.#lockPath, { force: true });
-    }
   }
 }
 
@@ -181,6 +134,11 @@ export function boardDirectory(cwd: string): string {
 
 /** Where a shared board lives under a working directory. */
 export function boardPath(cwd: string, board = "default"): string {
+  return join(boardDirectory(cwd), `${board}.db`);
+}
+
+/** Where an ack-era JSON board lived, for the one-time import. */
+export function legacyBoardPath(cwd: string, board = "default"): string {
   return join(boardDirectory(cwd), `${board}.json`);
 }
 
@@ -188,11 +146,10 @@ export function boardPath(cwd: string, board = "default"): string {
 export function ensureBoard(state: BoardState | null): BoardState {
   if (state === null) return initBoardState();
   const base = initBoardState();
-  // Snapshots written by older versions can omit whole fields (`owner`,
-  // `subscribed`, and the dropped `lease` did not always exist), not just
-  // per-id entries. Rebuild every map from the ids the snapshot does carry,
-  // then fill the missing entries with the same defaults
-  // `initAbstractBoardState` uses.
+  // Snapshots written by older versions can omit whole fields (`owner` and
+  // `subscribed` did not always exist), not just per-id entries. Rebuild every
+  // map from the ids the snapshot does carry, then fill the missing entries
+  // with the same defaults `initAbstractBoardState` uses.
   const registered = { ...(state.registered ?? {}) };
   const bound = { ...(state.bound ?? {}) };
   const owner = { ...(state.owner ?? {}) };
@@ -257,4 +214,47 @@ export function ensureBoard(state: BoardState | null): BoardState {
     subjects: state.subjects ?? {},
     postBodies: state.postBodies ?? {},
   };
+}
+
+/**
+ * Import an ack-era JSON board into the push revision.
+ *
+ * The old two-phase lifecycle maps onto the new one without loss: a queued
+ * message stays queued, a fetched-but-unacked message returns to its mailbox
+ * (it was never committed, so it must be delivered again), and an acked
+ * message becomes delivered. The old `lease` map is dropped; a leased message
+ * is prepended to its mailbox because the old invariant guaranteed it preceded
+ * the messages still in the queue.
+ */
+export function importLegacyBoard(raw: string): BoardState {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const oldStatus = (value: unknown): MessageStatus => {
+    switch (value) {
+      case "queued":
+        return "queued";
+      case "fetched":
+      case "acked":
+        return value === "acked" ? "delivered" : "queued";
+      case "delivered":
+      case "failed":
+        return value;
+      default:
+        return "absent";
+    }
+  };
+  const oldMailbox = (parsed["mailbox"] ?? {}) as Record<string, string[]>;
+  const oldLease = (parsed["lease"] ?? {}) as Record<string, string | null>;
+  const mailbox: Record<string, string[]> = {};
+  for (const [box, queue] of Object.entries(oldMailbox)) mailbox[box] = [...queue];
+  for (const [box, message] of Object.entries(oldLease)) {
+    if (message === null) continue;
+    mailbox[box] = [message, ...(mailbox[box] ?? [])];
+  }
+  const mstatus: Record<string, MessageStatus> = {};
+  for (const [message, status] of Object.entries((parsed["mstatus"] ?? {}) as Record<string, unknown>)) {
+    mstatus[message] = oldStatus(status);
+  }
+  const migrated = { ...parsed, mailbox, mstatus } as unknown as BoardState;
+  delete (migrated as unknown as Record<string, unknown>)["lease"];
+  return ensureBoard(migrated);
 }

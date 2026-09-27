@@ -10,7 +10,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { initBoardState, type BoardState } from "./engine/board.ts";
-import { boardPath, FileBoardBackend } from "./extension/persistence.ts";
+import { boardPath, legacyBoardPath } from "./extension/persistence.ts";
+import { SqliteBoardBackend } from "./extension/sqlite.ts";
 import { BoardStore } from "./extension/store.ts";
 import { buildBoardTool } from "./extension/tool.ts";
 import { BoardExplorer, BoardWidget, renderBoardDetail, renderBoardWidget } from "./extension/hud.ts";
@@ -45,7 +46,7 @@ export default function boardExtension(pi: ExtensionAPI): void {
 
   const getStore = (ctx: ExtensionContext): BoardStore => {
     if (store === null) {
-      store = new BoardStore(new FileBoardBackend(boardPath(ctx.cwd)));
+      store = new BoardStore(new SqliteBoardBackend(boardPath(ctx.cwd), { legacyPath: legacyBoardPath(ctx.cwd) }));
       void latestSnapshot(ctx);
     }
     return store;
@@ -99,7 +100,7 @@ export default function boardExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     currentCtx = ctx;
-    store = new BoardStore(new FileBoardBackend(boardPath(ctx.cwd)));
+    store = new BoardStore(new SqliteBoardBackend(boardPath(ctx.cwd), { legacyPath: legacyBoardPath(ctx.cwd) }));
     refreshWidget();
     startPolling();
   });
