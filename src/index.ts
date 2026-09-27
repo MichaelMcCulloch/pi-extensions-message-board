@@ -1,19 +1,24 @@
 /**
  * pi extension entry point.
  *
- * The board is file-backed and shared, so agents in separate pi processes (a
- * DAG's children, a pedestrian subagent swarm) see one log. The extension
- * registers the `board` tool, a `/board` explorer, and a compact summary widget
- * that polls the shared file so it reflects other processes' writes.
+ * The board is file-backed (SQLite) and shared, so agents in separate pi
+ * processes (a DAG's children, a pedestrian subagent swarm) see one log. The
+ * extension registers the `board` tool, a `/board` explorer, and a compact
+ * summary widget that polls the shared file so it reflects other processes'
+ * writes. A per-process pusher turns durable state into notifications: direct
+ * messages into the serving agent's context, forum activity into the context of
+ * subscribers, and failures back to senders.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { initBoardState, type BoardState } from "./engine/board.ts";
+import { BOARD_CHANGED } from "./extension/bus.ts";
 import { boardPath, legacyBoardPath } from "./extension/persistence.ts";
+import { BoardPusher } from "./extension/push.ts";
 import { SqliteBoardBackend } from "./extension/sqlite.ts";
 import { BoardStore } from "./extension/store.ts";
-import { buildBoardTool } from "./extension/tool.ts";
+import { agentOf, buildBoardTool } from "./extension/tool.ts";
 import { BoardExplorer, BoardWidget, renderBoardDetail, renderBoardWidget } from "./extension/hud.ts";
 
 /** The custom-entry type that carries one complete board snapshot. */
@@ -43,10 +48,17 @@ export default function boardExtension(pi: ExtensionAPI): void {
   let widgetTui: TUI | null = null;
   let widgetInstalled = false;
   let poll: NodeJS.Timeout | null = null;
+  let pusher: BoardPusher | null = null;
+  let unsubscribeChanged: (() => void) | null = null;
+
+  const openStore = (ctx: ExtensionContext): BoardStore =>
+    new BoardStore(
+      new SqliteBoardBackend(boardPath(ctx.cwd), { legacyPath: legacyBoardPath(ctx.cwd) }),
+    );
 
   const getStore = (ctx: ExtensionContext): BoardStore => {
     if (store === null) {
-      store = new BoardStore(new SqliteBoardBackend(boardPath(ctx.cwd), { legacyPath: legacyBoardPath(ctx.cwd) }));
+      store = openStore(ctx);
       void latestSnapshot(ctx);
     }
     return store;
@@ -92,32 +104,84 @@ export default function boardExtension(pi: ExtensionAPI): void {
   const startPolling = (): void => {
     stopPolling();
     poll = setInterval(() => {
-      if (currentCtx !== null) getStore(currentCtx).refresh();
+      if (currentCtx === null) return;
+      try {
+        pusher?.tick();
+      } catch {
+        // A transient failure must not kill the watcher; the next tick retries.
+      }
       refreshWidget();
     }, POLL_MS);
     poll.unref?.();
   };
 
+  const stopPusher = (): void => {
+    unsubscribeChanged?.();
+    unsubscribeChanged = null;
+    pusher = null;
+  };
+  const startPusher = (ctx: ExtensionContext): void => {
+    stopPusher();
+    pusher = new BoardPusher({
+      store: getStore(ctx),
+      agent: agentOf(ctx),
+      notify: (notification) =>
+        pi.sendMessage(
+          {
+            customType: `board/${notification.kind}`,
+            content: notification.text,
+            display: true,
+            details: notification.details,
+          },
+          { triggerTurn: true },
+        ),
+      emit: (channel, data) => pi.events.emit(channel, data),
+    });
+    unsubscribeChanged = pi.events.on(BOARD_CHANGED, () => refreshWidget());
+    pusher.tick();
+  };
+
   pi.on("session_start", (_event, ctx) => {
     currentCtx = ctx;
-    store = new BoardStore(new SqliteBoardBackend(boardPath(ctx.cwd), { legacyPath: legacyBoardPath(ctx.cwd) }));
+    store = openStore(ctx);
     refreshWidget();
     startPolling();
+    startPusher(ctx);
   });
   pi.on("session_tree", (_event, ctx) => {
     currentCtx = ctx;
     getStore(ctx).refresh();
     refreshWidget();
   });
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
+    const shutdownCtx = ctx ?? currentCtx;
     stopPolling();
+    stopPusher();
+    if (store !== null && shutdownCtx !== null) {
+      // Best effort: release the name so a later session can serve it. A crash
+      // still leaks the binding; stale-owner takeover is a documented gap.
+      try {
+        const agent = agentOf(shutdownCtx);
+        if (store.boundBox(agent) !== null) store.unbind(agent);
+      } catch {
+        // Shutdown must not throw.
+      }
+    }
     hideWidget();
     store = null;
     currentCtx = null;
     widgetTui = null;
   });
 
-  pi.registerTool(buildBoardTool(getStore));
+  const boardTool = buildBoardTool(getStore);
+  const execute = boardTool.execute!;
+  boardTool.execute = async (...args) => {
+    const result = await execute(...args);
+    pusher?.notifyLocal();
+    refreshWidget();
+    return result;
+  };
+  pi.registerTool(boardTool);
 
   const openExplorer = async (ctx: ExtensionContext): Promise<void> => {
     if (ctx.mode !== "tui" || !ctx.hasUI) return;

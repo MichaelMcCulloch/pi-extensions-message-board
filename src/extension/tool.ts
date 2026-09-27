@@ -37,6 +37,12 @@ const BoardParams = Type.Object({
   subject: Type.Optional(Type.String({ description: "Forum post subject." })),
   parent: Type.Optional(Type.String({ description: "Post id this post replies to." })),
   since: Type.Optional(Type.String({ description: "Read posts after this post id." })),
+  ttlMs: Type.Optional(
+    Type.Number({
+      description:
+        "Optional time-to-live in milliseconds for action=send. If the message is not delivered in time it fails and you are told; omit it for a durable inbox that waits forever.",
+    }),
+  ),
 });
 
 interface BoardDetails {
@@ -128,6 +134,7 @@ function runAction(
     subject?: string;
     parent?: string;
     since?: string;
+    ttlMs?: number;
   },
 ): Outcome {
   switch (params.action) {
@@ -147,7 +154,7 @@ function runAction(
     case "send": {
       const box = requireParam(params.box, "box", "send");
       const body = requireParam(params.body, "body", "send");
-      const result = store.send(agent, box, body);
+      const result = store.send(agent, box, body, undefined, params.ttlMs);
       return { text: `queued ${result.message} to ${box}; it is pushed when the name is served`, message: result.message };
     }
     case "inbox": {

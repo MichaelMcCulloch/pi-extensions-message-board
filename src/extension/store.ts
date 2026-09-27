@@ -201,6 +201,32 @@ export class BoardStore {
     return out;
   }
 
+  /** How many posts the log holds; the high-water mark for push notification. */
+  public postCount(): number {
+    this.refresh();
+    return this.#state.posted.length;
+  }
+
+  /** Posts after a log position, in append order, with their 1-based seq. */
+  public postsAfter(seq: number): readonly {
+    readonly id: string;
+    readonly seq: number;
+    readonly topic: string;
+    readonly author: string | null;
+    readonly subject: string;
+    readonly body: string;
+  }[] {
+    this.refresh();
+    return this.#state.posted.slice(seq).map((id, index) => ({
+      id,
+      seq: seq + index + 1,
+      topic: this.#state.topic[id] ?? "",
+      author: this.#state.author[id] ?? null,
+      subject: this.#state.subjects[id] ?? "",
+      body: this.#state.postBodies[id] ?? "",
+    }));
+  }
+
   /** The topics an agent watches. */
   public subscriptions(agent: string): readonly string[] {
     this.refresh();
