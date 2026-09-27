@@ -180,4 +180,30 @@ describe("push watcher", () => {
     expect(local[0]?.data).toMatchObject({ origin: "local" });
     expect(store.violations()).toEqual([]);
   });
+
+  it("does not re-announce the watcher's own commits as observed changes", () => {
+    const store = memoryBoard();
+    store.register("a1");
+    store.register("a2");
+    store.bind("a2", "inbox");
+    const sent = store.send("a1", "inbox", "hello");
+
+    // The harness is created after the send, so the initial revision is
+    // current; the only commit below is the watcher's own delivery.
+    const recipient = harness(store, "a2");
+    recipient.pusher.tick();
+    expect(store.state.mstatus[sent.message]).toBe("delivered");
+    expect(recipient.events.filter((event) => event.channel === BOARD_CHANGED)).toHaveLength(0);
+
+    // The delivery commit must not be reported as an observed change later.
+    recipient.pusher.tick();
+    expect(recipient.events.filter((event) => event.channel === BOARD_CHANGED)).toHaveLength(0);
+
+    // A genuine foreign commit is still observed before the next delivery.
+    const afterForeign = store.send("a1", "inbox", "second").state.revision;
+    recipient.pusher.tick();
+    expect(recipient.events.filter((event) => event.channel === BOARD_CHANGED)).toEqual([
+      { channel: BOARD_CHANGED, data: { revision: afterForeign, origin: "observed" } },
+    ]);
+  });
 });

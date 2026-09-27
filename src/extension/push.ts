@@ -90,14 +90,18 @@ export class BoardPusher {
       } catch (error) {
         // The message can never reach the agent's context, so fail it now and
         // let the sender be told rather than retrying a poison message forever.
-        this.#deps.store.fail(pending.box, pending.id, `injection-failed: ${errorText(error)}`);
+        const state = this.#deps.store.fail(pending.box, pending.id, `injection-failed: ${errorText(error)}`);
+        // Our own commit is announced by board:failed; advancing the revision
+        // keeps the next tick from re-announcing it as an observed change.
+        this.#lastRevision = state.revision;
         this.#deps.emit(BOARD_FAILED, { box: pending.box, message: pending.id, reason: "injection-failed" });
         continue;
       }
       try {
         // Inject first, mark second: a crash in between leaves the message
         // queued and it is delivered again.
-        this.#deps.store.deliver(this.#deps.agent, pending.box, pending.id);
+        const state = this.#deps.store.deliver(this.#deps.agent, pending.box, pending.id);
+        this.#lastRevision = state.revision;
         this.#deps.emit(BOARD_DELIVERED, { box: pending.box, message: pending.id, from: pending.from });
       } catch (error) {
         if (!(error instanceof BoardOperationError)) throw error;
@@ -133,7 +137,9 @@ export class BoardPusher {
 
   #failExpired(): void {
     const now = (this.#deps.now ?? Date.now)();
-    for (const message of this.#deps.store.expire(now)) {
+    const expired = this.#deps.store.expire(now);
+    if (expired.length > 0) this.#lastRevision = this.#deps.store.state.revision;
+    for (const message of expired) {
       this.#deps.emit(BOARD_FAILED, { box: null, message, reason: "expired" });
     }
   }
