@@ -204,12 +204,15 @@ than a half-verified `bind --force`.
 TLC checks the model exhaustively; `scripts/emit-traces.ts` drives the
 production store and TLC replays every step against the same relation.
 
-The TLAPS inductive proof (`spec/archive/MessageBoardProof.ack-era.tla`) covers
-the previous, ack-era revision. The push revision is TLC-verified only; the
-proof is to be re-derived against the simpler transition relation (the lease
-machinery it spent most of its lines on no longer exists). `pnpm verify` runs
-everything that is checkable in this repository, and the archived proof is
-explicitly out of the chain until it is rewritten.
+The TLAPS inductive proof (`spec/MessageBoardProof.tla`) re-derives the same
+result for arbitrary constants: `Init => Inv` and every action preserves every
+invariant component, so `Spec => []Inv` holds for every `Agents`, `Boxes`,
+`Messages`, `Posts`, `Topics`, `Cap`, and `MaxClock` — not only the TLC fixture.
+It proves in 983 obligations, including `L_TailPreserves`, which isolates the
+one place a mailbox shrinks and states it over sequences alone (no primed state
+variables), because this tlapm/Z3 pair is weak on primed `EXCEPT` updates. The
+ack-era proof is kept under `spec/archive` as history. `pnpm verify` runs the
+model check, trace validation, and both proofs.
 
 ## Non-goals
 
