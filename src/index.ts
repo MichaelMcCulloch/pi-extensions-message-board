@@ -42,7 +42,7 @@ export function latestSnapshot(ctx: ExtensionContext): BoardState | null {
 }
 
 /** Default export consumed by pi. */
-export default function boardExtension(pi: ExtensionAPI): void {
+export default function boardExtension(pi: ExtensionAPI, options: { splitTools?: boolean } = {}): void {
   let store: BoardStore | null = null;
   let currentCtx: ExtensionContext | null = null;
   let widgetTui: TUI | null = null;
@@ -173,15 +173,17 @@ export default function boardExtension(pi: ExtensionAPI): void {
     widgetTui = null;
   });
 
-  const boardTool = buildBoardTool(getStore);
-  const execute = boardTool.execute!;
-  boardTool.execute = async (...args) => {
-    const result = await execute(...args);
-    pusher?.notifyLocal();
-    refreshWidget();
-    return result;
-  };
-  pi.registerTool(boardTool);
+  for (const facet of options.splitTools ? ['forum', 'mailbox'] as const : [undefined]) {
+    const boardTool = buildBoardTool(getStore, facet);
+    const execute = boardTool.execute!;
+    boardTool.execute = async (...args) => {
+      const result = await execute(...args);
+      pusher?.notifyLocal();
+      refreshWidget();
+      return result;
+    };
+    pi.registerTool(boardTool);
+  }
 
   const openExplorer = async (ctx: ExtensionContext): Promise<void> => {
     if (ctx.mode !== "tui" || !ctx.hasUI) return;

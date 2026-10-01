@@ -240,6 +240,8 @@ FailedTerminal == \A m \in Messages: [] (mstatus[m] = "failed" => [] (mstatus[m]
 QueuedSettles ==
     \A m \in Messages: [](mstatus[m] = "queued" => <>(mstatus[m] \in {"delivered", "failed"}))
 
+SafetySpec == Init /\ [][Next]_vars
+
 Spec ==
     /\ Init
     /\ [][Next]_vars

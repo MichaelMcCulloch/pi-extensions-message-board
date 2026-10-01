@@ -335,7 +335,7 @@ THEOREM Safety ==
          \* `None` is the "no value" sentinel of an option type; it must be fresh,
          \* or options become ambiguous.
          None \notin (Agents \cup Boxes \cup Messages \cup Posts \cup Topics)
-  PROVE Spec => []Inv
+  PROVE SafetySpec => []Inv
 
   <1>1. Init => Inv
     <2>1. Init => TypeOK
@@ -1004,6 +1004,6 @@ THEOREM Safety ==
          DEF Next, vars
 
   <1>3. QED
-    BY <1>1, <1>2, PTL DEF Spec
+    BY <1>1, <1>2, PTL DEF SafetySpec
 
 =======================================================================

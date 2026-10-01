@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { buildBoardTool } from "../src/extension/tool.ts";
 import { memoryBoard } from "../src/extension/store.ts";
 
-function ctxFor(agent: string): ExtensionContext {
-  return { sessionManager: { getSessionId: () => agent } } as unknown as ExtensionContext;
+function ctxFor(agent: string): ExtensionToolContext {
+  return { sessionManager: { getSessionId: () => agent } } as unknown as ExtensionToolContext;
 }
 
 function toolOn(store: ReturnType<typeof memoryBoard>) {

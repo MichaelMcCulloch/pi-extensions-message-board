@@ -29,8 +29,10 @@ export const BOARD_TOOL_ACTIONS = [
   "status",
 ] as const;
 
-const BoardParams = Type.Object({
-  action: StringEnum(BOARD_TOOL_ACTIONS),
+export const FORUM_TOOL_ACTIONS = ['register', 'whoami', 'subscribe', 'unsubscribe', 'post', 'read', 'topics', 'status'] as const;
+export const MAILBOX_TOOL_ACTIONS = ['register', 'whoami', 'bind', 'unbind', 'send', 'inbox', 'status'] as const;
+const boardParams = (actions: readonly (typeof BOARD_TOOL_ACTIONS)[number][]) => Type.Object({
+  action: StringEnum(actions),
   box: Type.Optional(Type.String({ description: "Mailbox name to bind or send to." })),
   body: Type.Optional(Type.String({ description: "Message or post body." })),
   topic: Type.Optional(Type.String({ description: "Forum topic to post in, read, watch, or stop watching." })),
@@ -44,6 +46,7 @@ const BoardParams = Type.Object({
     }),
   ),
 });
+const BoardParams = boardParams(BOARD_TOOL_ACTIONS);
 
 interface BoardDetails {
   readonly action: string;
@@ -57,21 +60,25 @@ interface BoardDetails {
 /** Build the tool against a lazily constructed store and the caller identity. */
 export function buildBoardTool(
   getStore: (ctx: ExtensionContext) => BoardStore,
+  facet?: 'forum' | 'mailbox',
 ): ToolDefinition<typeof BoardParams, BoardDetails> {
+  const actions = facet === 'forum' ? FORUM_TOOL_ACTIONS : facet === 'mailbox' ? MAILBOX_TOOL_ACTIONS : BOARD_TOOL_ACTIONS;
   return {
-    name: "board",
-    label: "Board",
-    description:
+    name: facet ?? "board",
+    namespace: { name: facet ?? "board", description: facet === "forum" ? "Shared discussions and subscriptions" : facet === "mailbox" ? "Addressed durable agent messages" : "Agent communication" },
+    label: facet === 'forum' ? 'Forum' : facet === 'mailbox' ? 'Mailbox' : "Board",
+    description: facet === 'forum' ? 'Post findings in shared topics, read discussions, and subscribe to updates. Posting subscribes you; new posts are pushed into context. Identity is your pi session.' : facet === 'mailbox' ? 'Bind a durable mailbox name and send direct messages to other names. Messages are pushed into context. Identity is your pi session.' :
       "Cooperate with other agents over a shared board. Direct: bind a durable mailbox name, send to a name; messages are pushed into the recipient's context. Broadcast: post to a forum topic, read a topic, list topics; posting in a topic subscribes you to it, and each new post is pushed to subscribers. Your identity is your session; you cannot post or send as another agent.",
-    promptSnippet: "board: message other agents directly or post to a shared forum",
-    promptGuidelines: [
+    promptSnippet: facet === 'forum' ? 'forum: publish and discuss shared findings' : facet === 'mailbox' ? 'mailbox: send addressed messages to agents' : "board: message other agents directly or post to a shared forum",
+    promptGuidelines: facet ? [facet === 'forum' ? 'Use topics for shared findings; post subscribes you to updates.' : 'Bind your mailbox before receiving addressed messages; incoming messages are pushed automatically.'] : [
       "Bind a durable mailbox name with action=bind so other agents can send you messages; they arrive as push notifications and do not need to be fetched.",
       "Use action=post/read for shared findings and questions that any agent may need, not just one recipient; posting subscribes you to that topic.",
       "Use action=subscribe/unsubscribe to watch topics you have not posted in, or to stop notifications from ones you have.",
     ],
-    parameters: BoardParams,
+    parameters: boardParams(actions),
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<{ content: { type: "text"; text: string }[]; details: BoardDetails }> {
+      if (!(actions as readonly string[]).includes(params.action)) throw new BoardOperationError('board-wrong-facet', `${params.action} is not available through ${facet}`);
       const store = getStore(ctx);
       const agent = agentOf(ctx);
       store.refresh();
