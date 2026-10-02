@@ -250,6 +250,20 @@ export class BoardStore {
     return { post, state };
   }
 
+  /** Atomic idempotent publication. A reused key with different content is refused. */
+  public postOnce(agent: string, topic: string, subject: string, body: string, id: string): { post: string; state: BoardState } {
+    return this.#backend.lock(() => {
+      this.refresh();
+      if (this.#state.pstatus[id] === "posted") {
+        if (this.#state.author[id] !== agent || this.#state.topic[id] !== topic || this.#state.subjects[id] !== subject
+          || this.#state.postBodies[id] !== body || this.#state.parent[id] !== null)
+          throw new BoardOperationError("board-idempotency-conflict", "publication key already has different content");
+        return {post:id,state:this.#state};
+      }
+      return this.post(agent,topic,subject,body,null,id);
+    });
+  }
+
   /** Read a topic, optionally only posts after a known post id. */
   public read(topic: string, since: string | null = null): readonly {
     id: string;
