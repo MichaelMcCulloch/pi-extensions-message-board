@@ -326,3 +326,10 @@ The DAG worktree/wave integration that consumes this board lives in the sibling
 repository (`pi-agent-harness-dag`, `DESIGN-worktrees.md`). The board is
 deliberately **not** a dependency of the DAG: it is available to node agents,
 but the DAG's scheduler does not require it.
+
+### Pi 1.0 programmatic results
+
+Targets pi 1.0.0 with host SDK packages in peer dependencies. Public tools declare
+an output schema and return structured JSON to codemode while preserving their
+human-readable results. Mutating calls remain sequential and domain refusals
+remain errors. Widgets and overlays use the host TUI APIs, including fullscreen.

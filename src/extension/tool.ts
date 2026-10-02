@@ -49,6 +49,7 @@ const boardParams = (actions: readonly (typeof BOARD_TOOL_ACTIONS)[number][]) =>
 const BoardParams = boardParams(BOARD_TOOL_ACTIONS);
 
 interface BoardDetails {
+  readonly data?: unknown;
   readonly action: string;
   readonly revision: number;
   readonly agent: string;
@@ -63,7 +64,7 @@ export function buildBoardTool(
   facet?: 'forum' | 'mailbox',
 ): ToolDefinition<typeof BoardParams, BoardDetails> {
   const actions = facet === 'forum' ? FORUM_TOOL_ACTIONS : facet === 'mailbox' ? MAILBOX_TOOL_ACTIONS : BOARD_TOOL_ACTIONS;
-  return {
+  const tool: ToolDefinition<typeof BoardParams, BoardDetails> = {
     name: facet ?? "board",
     namespace: { name: facet ?? "board", description: facet === "forum" ? "Shared discussions and subscriptions" : facet === "mailbox" ? "Addressed durable agent messages" : "Agent communication" },
     label: facet === 'forum' ? 'Forum' : facet === 'mailbox' ? 'Mailbox' : "Board",
@@ -90,6 +91,7 @@ export function buildBoardTool(
             action: params.action,
             revision: store.state.revision,
             agent,
+            ...(outcome.data === undefined ? {} : {data:outcome.data}),
             ...(outcome.message === undefined ? {} : { message: outcome.message }),
             ...(outcome.post === undefined ? {} : { post: outcome.post }),
             board: store.projection,
@@ -97,10 +99,7 @@ export function buildBoardTool(
         };
       } catch (error) {
         if (error instanceof BoardOperationError) {
-          // The agent runtime only marks a tool result as an error when
-          // `execute` throws; a refusal returned as ordinary content is
-          // reported to the model as success. Rethrow with the action and the
-          // stable code so the failure is visible and actionable.
+          // Throw refusals so model and codemode callers receive a failure.
           throw new BoardOperationError(
             error.code,
             `board ${params.action} refused (${error.code}): ${error.message}`,
@@ -108,6 +107,14 @@ export function buildBoardTool(
         }
         throw error;
       }
+    },
+  };
+  return {
+    ...tool,
+    outputSchema: Type.Object({action:Type.String(),revision:Type.Integer(),agent:Type.String(),board:Type.Unknown(),data:Type.Optional(Type.Unknown()),message:Type.Optional(Type.String()),post:Type.Optional(Type.String())}),
+    async execute(...args) {
+      const result = await tool.execute(...args);
+      return {...result,structuredContent:JSON.parse(JSON.stringify(result.details))};
     },
   };
 }
@@ -118,6 +125,7 @@ export function agentOf(ctx: ExtensionContext): string {
 }
 
 interface Outcome {
+  readonly data?: unknown;
   readonly text: string;
   readonly message?: string;
   readonly post?: string;
@@ -166,7 +174,7 @@ function runAction(
     }
     case "inbox": {
       const box = requireParam(params.box, "box", "inbox");
-      return { text: JSON.stringify(store.inbox(box)) };
+      const data=store.inbox(box); return {text:JSON.stringify(data),data};
     }
     case "subscribe": {
       const topic = requireParam(params.topic, "topic", "subscribe");
@@ -187,10 +195,11 @@ function runAction(
     }
     case "read": {
       const topic = requireParam(params.topic, "topic", "read");
-      return { text: JSON.stringify(store.read(topic, params.since ?? null)) };
+      const data=store.read(topic, params.since ?? null); return {text:JSON.stringify(data),data};
     }
-    case "topics":
-      return { text: JSON.stringify(store.topics()) };
+    case "topics": {
+      const data=store.topics(); return {text:JSON.stringify(data),data};
+    }
     case "status":
       return { text: JSON.stringify(store.projection) };
   }

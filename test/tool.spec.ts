@@ -1,3 +1,4 @@
+import { Check } from 'typebox/value';
 import { describe, expect, it } from "vitest";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { buildBoardTool } from "../src/extension/tool.ts";
@@ -9,8 +10,11 @@ function ctxFor(agent: string): ExtensionToolContext {
 
 function toolOn(store: ReturnType<typeof memoryBoard>) {
   const tool = buildBoardTool(() => store);
-  return (agent: string, params: unknown) =>
-    tool.execute!("call", params as never, undefined, undefined, ctxFor(agent));
+  return async (agent: string, params: unknown) => {
+    const result=await tool.execute!("call", params as never, undefined, undefined, ctxFor(agent));
+    expect(Check(tool.outputSchema!,result.structuredContent)).toBe(true);
+    return result;
+  };
 }
 
 describe("board tool", () => {
@@ -26,6 +30,7 @@ describe("board tool", () => {
     expect(store.pending("a2")[0]).toMatchObject({ from: "a1", body: "ping" });
 
     const inbox = await call("a2", { action: "inbox", box: "inbox" });
+    expect(inbox.structuredContent).toMatchObject({action:"inbox",data:expect.arrayContaining([expect.objectContaining({preview:"ping"})])});
     expect(inbox.content[0]?.type === "text" && inbox.content[0].text).toContain("ping");
 
     // The runtime injects and then commits; the tool never fetches.
