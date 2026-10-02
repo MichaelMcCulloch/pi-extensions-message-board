@@ -170,11 +170,13 @@ export default function boardExtension(pi: ExtensionAPI, options: BoardExtension
     stopPolling();
     stopPusher();
     if (store !== null && shutdownCtx !== null) {
-      // Best effort: release the name so a later session can serve it. A crash
-      // still leaks the binding; stale-owner takeover is a documented gap.
+      // Best effort: release the name and leave the registry so a later
+      // session can serve it. A crash still leaks both; stale-owner takeover
+      // is a documented gap.
       try {
         const agent = agentOf(shutdownCtx);
         if (store.boundBox(agent) !== null) store.unbind(agent);
+        store.unregister(agent);
       } catch {
         // Shutdown must not throw.
       }

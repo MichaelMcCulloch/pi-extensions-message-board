@@ -166,8 +166,8 @@ export class SqliteBoardBackend implements BoardBackend {
       const registered: Record<string, boolean> = {};
       const bound: Record<string, string | null> = {};
       const subscribed: Record<string, string[]> = {};
-      for (const row of this.#db.prepare("SELECT agent FROM agents").all() as { agent: string }[]) {
-        registered[row.agent] = true;
+      for (const row of this.#db.prepare("SELECT agent, registered FROM agents").all() as { agent: string; registered: number }[]) {
+        registered[row.agent] = row.registered !== 0;
         bound[row.agent] = null;
         subscribed[row.agent] = [];
       }

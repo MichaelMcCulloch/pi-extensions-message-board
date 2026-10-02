@@ -81,7 +81,7 @@ describe("extension wiring", () => {
       handlers.get("session_shutdown")!({}, ctx);
       const released = backend.read()!;
       expect(released.bound["s1"]).toBe(null);
-      expect(released.registered["s1"]).toBe(true);
+      expect(released.registered["s1"]).toBe(false);
       expect(released.owner["coordinator"]).toBe(null);
     } finally {
       backend.close();

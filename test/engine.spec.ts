@@ -168,4 +168,20 @@ describe("board store (push delivery)", () => {
     board.send("a1", "worker", "ping");
     expect(board.pending("a2")[0]).toMatchObject({ from: "a1", fromBox: "coordinator", body: "ping" });
   });
+
+  it("unregisters only an unbound session and clears its subscriptions", () => {
+    const board = memoryBoard();
+    board.admit("a1", "worker");
+    board.subscribe("a1", "design");
+    expect(() => board.unregister("a1")).toThrow(); // still serves a name
+    board.unbind("a1");
+    board.unregister("a1");
+    expect(board.state.registered["a1"]).toBe(false);
+    expect(board.state.subscribed["a1"]).toEqual([]);
+    expect(board.violations()).toEqual([]);
+    board.unregister("a1"); // idempotent
+    expect(board.state.registered["a1"]).toBe(false);
+    board.register("a1");
+    expect(board.state.registered["a1"]).toBe(true);
+  });
 });

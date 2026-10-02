@@ -23,6 +23,7 @@ import { boardConfigOf, type BoardState } from "./board.ts";
 /** A command the delivery machinery or the model-facing tool can issue. */
 export type BoardCommand =
   | { readonly type: "register"; readonly agent: AgentId }
+  | { readonly type: "unregister"; readonly agent: AgentId }
   | { readonly type: "bind"; readonly agent: AgentId; readonly box: BoxId }
   | { readonly type: "unbind"; readonly agent: AgentId }
   | { readonly type: "send"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId; readonly body: string }
@@ -51,6 +52,8 @@ export function eventsForCommand(command: BoardCommand): BoardEvent[] {
   switch (command.type) {
     case "register":
       return [{ type: "register", agent: command.agent }];
+    case "unregister":
+      return [{ type: "unregister", agent: command.agent }];
     case "bind":
       return [{ type: "bind", agent: command.agent, box: command.box }];
     case "unbind":
@@ -100,6 +103,8 @@ export function isEnabled(state: BoardState, event: BoardEvent): boolean {
   switch (event.type) {
     case "register":
       return guards.register(state, event.agent);
+    case "unregister":
+      return guards.unregister(state, event.agent);
     case "bind":
       return guards.bind(state, event.agent, event.box);
     case "unbind":

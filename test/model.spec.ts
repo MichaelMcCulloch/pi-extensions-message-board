@@ -78,7 +78,7 @@ describe("abstract message board (push delivery)", () => {
 
   it("reaches every action", () => {
     expect([...exploration.actions].sort()).toEqual(
-      ["bind", "deliver", "fail", "post", "register", "send", "subscribe", "unbind", "unsubscribe"].sort(),
+      ["bind", "deliver", "fail", "post", "register", "send", "subscribe", "unbind", "unregister", "unsubscribe"].sort(),
     );
   });
 

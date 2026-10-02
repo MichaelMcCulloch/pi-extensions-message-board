@@ -74,6 +74,7 @@ Init ==
 \* ---------------------------------------------------------------------------
 
 GuardRegister(a) == ~registered[a]
+GuardUnregister(a) == registered[a] /\ bound[a] = None
 GuardBind(a, b) == registered[a] /\ bound[a] = None /\ owner[b] = None
 GuardUnbind(a) == registered[a] /\ bound[a] # None
 GuardSend(s, b, m) == registered[s] /\ mstatus[m] = "absent" /\ Len(mailbox[b]) < Cap /\ clock < MaxClock
@@ -100,6 +101,14 @@ Register(a) ==
     /\ registered' = [registered EXCEPT ![a] = TRUE]
     /\ UNCHANGED <<bound, owner, sender, origin, recipient, sentAt, mstatus,
                    mailbox, subscribed, pstatus, author, porigin, parent, topic, posted, clock>>
+
+\* Leaving drops the agent's subscriptions, so SubsRegistered is preserved.
+Unregister(a) ==
+    /\ GuardUnregister(a)
+    /\ registered' = [registered EXCEPT ![a] = FALSE]
+    /\ subscribed' = [subscribed EXCEPT ![a] = {}]
+    /\ UNCHANGED <<bound, owner, sender, origin, recipient, sentAt, mstatus,
+                   mailbox, pstatus, author, porigin, parent, topic, posted, clock>>
 
 Bind(a, b) ==
     /\ GuardBind(a, b)
@@ -168,6 +177,7 @@ Post(a, p, t, par) ==
 
 Next ==
     \/ \E a \in Agents: Register(a)
+    \/ \E a \in Agents: Unregister(a)
     \/ \E a \in Agents, b \in Boxes: Bind(a, b)
     \/ \E a \in Agents: Unbind(a)
     \/ \E s \in Agents, b \in Boxes, m \in Messages: Send(s, b, m)

@@ -999,8 +999,65 @@ THEOREM Safety ==
       <3>10. QED
         BY SMT, <3>1, <3>2, <3>3, <3>4, <3>5, <3>6, <3>7, <3>8, <3>9 DEF Inv
 
-    <2>11. QED
-      BY SMT, <2>1, <2>2, <2>3, <2>4, <2>5, <2>6, <2>7, <2>8, <2>9, <2>10
+    <2>11. \A a \in Agents: Inv /\ Unregister(a) => Inv'
+      <3>1. \A a \in Agents: Inv /\ Unregister(a) => TypeOK'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Inv, TypeOK, Unregister, GuardUnregister, vars
+      <3>2. \A a \in Agents: Inv /\ Unregister(a) => BoundConsistent'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>3. \A a \in Agents: Inv /\ Unregister(a) => OwnerConsistent'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>4. \A a \in Agents: Inv /\ Unregister(a) => MessageStatus'
+        BY Isa DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>5. \A a \in Agents: Inv /\ Unregister(a) => MailboxInv'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>6. \A a \in Agents: Inv /\ Unregister(a) => SubsRegistered'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>7. \A a \in Agents: Inv /\ Unregister(a) => PostsInv'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>8. \A a \in Agents: Inv /\ Unregister(a) => PostedDistinct'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>9. \A a \in Agents: Inv /\ Unregister(a) => PostedMembership'
+        BY SMT DEF
+          MStatus, PStatus, None,
+          Members, Occ, Inv, TypeOK, BoundConsistent, OwnerConsistent,
+          MessageStatus, MailboxInv, SubsRegistered, PostsInv, PostedDistinct,
+          PostedMembership, Unregister, GuardUnregister, vars
+      <3>10. QED
+        BY SMT, <3>1, <3>2, <3>3, <3>4, <3>5, <3>6, <3>7, <3>8, <3>9 DEF Inv
+
+    <2>12. QED
+      BY SMT, <2>1, <2>2, <2>3, <2>4, <2>5, <2>6, <2>7, <2>8, <2>9, <2>10,
+             <2>11
          DEF Next, vars
 
   <1>3. QED

@@ -85,6 +85,16 @@ export class BoardStore {
   }
 
   /**
+   * Remove the agent from the registry. Enabled only while unbound: a served
+   * name would otherwise be left ownerless. Idempotent.
+   */
+  public unregister(agent: string): BoardState {
+    this.refresh();
+    if (this.#state.registered[agent] !== true) return this.#state;
+    return this.#apply({ type: "unregister", agent });
+  }
+
+  /**
    * Admit a live session: register it, then serve `preferred` (falling back to
    * the agent identity when that name is taken). Idempotent; an existing
    * binding is kept, and failing to claim a name never fails the session.

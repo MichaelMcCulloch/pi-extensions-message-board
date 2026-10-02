@@ -208,7 +208,7 @@ The TLAPS inductive proof (`spec/MessageBoardProof.tla`) re-derives the same
 result for arbitrary constants: `Init => Inv` and every action preserves every
 invariant component, so `Spec => []Inv` holds for every `Agents`, `Boxes`,
 `Messages`, `Posts`, `Topics`, `Cap`, and `MaxClock` — not only the TLC fixture.
-It proves in 983 obligations, including `L_TailPreserves`, which isolates the
+It proves in 1013 obligations, including `L_TailPreserves`, which isolates the
 one place a mailbox shrinks and states it over sequences alone (no primed state
 variables), because this tlapm/Z3 pair is weak on primed `EXCEPT` updates. The
 ack-era proof is kept under `spec/archive` as history. `pnpm verify` runs the

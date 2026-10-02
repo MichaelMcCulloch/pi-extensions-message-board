@@ -51,6 +51,10 @@ const register = (agent: string): Step => (store) => {
   store.register(agent);
   return { type: "register", agent };
 };
+const unregister = (agent: string): Step => (store) => {
+  store.unregister(agent);
+  return { type: "unregister", agent };
+};
 const bind = (agent: string, box: BoxId): Step => (store) => {
   store.bind(agent, box);
   return { type: "bind", agent, box };
@@ -140,6 +144,10 @@ export function scenarios(): Scenario[] {
     {
       name: "forum-thread",
       steps: [register("a1"), post("a1", "p1", "t1", null), post("a1", "p2", "t1", "p1")],
+    },
+    {
+      name: "session-exit",
+      steps: [register("a1"), subscribe("a1", "t1"), unregister("a1")],
     },
     {
       name: "mixed",

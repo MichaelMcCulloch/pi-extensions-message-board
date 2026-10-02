@@ -57,6 +57,17 @@ describe("sqlite board backend", () => {
     second.close();
   });
 
+  it("round-trips an unregistered agent as unregistered", () => {
+    const backend = new SqliteBoardBackend(join(dir(), "board.db"));
+    const board = memoryBoard();
+    board.admit("a1", "coordinator");
+    board.unbind("a1");
+    board.unregister("a1");
+    backend.write(board.state);
+    expect(backend.read()?.registered["a1"]).toBe(false);
+    backend.close();
+  });
+
   it("serializes read-modify-write through the transaction", () => {
     const backend = new SqliteBoardBackend(join(dir(), "board.db"));
     backend.write({ ...initBoardState(), revision: 7 });

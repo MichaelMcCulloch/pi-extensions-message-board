@@ -27,6 +27,7 @@ describe("TLA+ / TypeScript parity", () => {
     const text = readFileSync(path, "utf8");
     const guardName: Record<string, string> = {
       register: "GuardRegister",
+      unregister: "GuardUnregister",
       bind: "GuardBind",
       unbind: "GuardUnbind",
       send: "GuardSend",

@@ -28,7 +28,10 @@ export const REGISTRY_MACHINE: MachineSpec = {
   name: "RegistryMachine",
   role: "agent registration",
   states: ["unregistered", "registered"],
-  edges: [{ from: "unregistered", on: "register", to: "registered" }],
+  edges: [
+    { from: "unregistered", on: "register", to: "registered" },
+    { from: "registered", on: "unregister", to: "unregistered" },
+  ],
 };
 
 /** Binding: the exclusive agent<->name mapping. */
@@ -107,7 +110,7 @@ export const ALL_MACHINES: readonly MachineSpec[] = [
 
 /** The action names contributed by each machine. */
 export const ACTIONS_BY_MACHINE: Readonly<Record<string, readonly BoardAction[]>> = {
-  RegistryMachine: ["register"],
+  RegistryMachine: ["register", "unregister"],
   BindingMachine: ["bind", "unbind"],
   MailboxMachine: ["send", "deliver", "fail"],
   MessageMachine: ["send", "deliver", "fail"],

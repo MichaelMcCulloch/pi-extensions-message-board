@@ -25,6 +25,7 @@ machineVars == <<registered, bound, owner, sender, origin, recipient, sentAt,
 
 ActionOf(ev) ==
     \/ (ev.type = "register"    /\ Register(ev.agent))
+    \/ (ev.type = "unregister"  /\ Unregister(ev.agent))
     \/ (ev.type = "bind"        /\ Bind(ev.agent, ev.box))
     \/ (ev.type = "unbind"      /\ Unbind(ev.agent))
     \/ (ev.type = "send"        /\ Send(ev.agent, ev.box, ev.message))
@@ -36,6 +37,7 @@ ActionOf(ev) ==
 
 GuardOf(ev) ==
     \/ (ev.type = "register"    /\ GuardRegister(ev.agent))
+    \/ (ev.type = "unregister"  /\ GuardUnregister(ev.agent))
     \/ (ev.type = "bind"        /\ GuardBind(ev.agent, ev.box))
     \/ (ev.type = "unbind"      /\ GuardUnbind(ev.agent))
     \/ (ev.type = "send"        /\ GuardSend(ev.agent, ev.box, ev.message))

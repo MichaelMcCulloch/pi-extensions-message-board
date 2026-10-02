@@ -79,6 +79,7 @@ export interface AbstractBoardState {
 /** The event alphabet. */
 export type BoardEvent =
   | { readonly type: "register"; readonly agent: AgentId }
+  | { readonly type: "unregister"; readonly agent: AgentId }
   | { readonly type: "bind"; readonly agent: AgentId; readonly box: BoxId }
   | { readonly type: "unbind"; readonly agent: AgentId }
   | { readonly type: "send"; readonly agent: AgentId; readonly box: BoxId; readonly message: MessageId }
@@ -99,6 +100,7 @@ export type BoardAction = BoardEvent["type"];
 /** Every action of the product machine, in specification order. */
 export const BOARD_ACTIONS: readonly BoardAction[] = [
   "register",
+  "unregister",
   "bind",
   "unbind",
   "send",
@@ -179,6 +181,10 @@ function sortedUnique(values: readonly string[]): string[] {
 export const guards = {
   register: (state: AbstractBoardState, agent: AgentId): boolean => state.registered[agent] !== true,
 
+  /** Only an unbound session can leave: a served name would be left ownerless. */
+  unregister: (state: AbstractBoardState, agent: AgentId): boolean =>
+    state.registered[agent] === true && (state.bound[agent] ?? null) === null,
+
   bind: (state: AbstractBoardState, agent: AgentId, box: BoxId): boolean =>
     state.registered[agent] === true &&
     (state.bound[agent] ?? null) === null &&
@@ -244,6 +250,14 @@ export function referenceReduceBoardState(
         registered: set(state.registered, event.agent, true),
         bound: state.bound[event.agent] === undefined ? set(state.bound, event.agent, null) : state.bound,
         subscribed: state.subscribed[event.agent] === undefined ? set(state.subscribed, event.agent, []) : state.subscribed,
+      };
+    case "unregister":
+      require(guards.unregister(state, event.agent), "unregister-not-enabled", event.agent);
+      return {
+        ...state,
+        registered: set(state.registered, event.agent, false),
+        // An unregistered agent holds no subscriptions (SubsRegistered).
+        subscribed: set(state.subscribed, event.agent, []),
       };
     case "bind": {
       require(guards.bind(state, event.agent, event.box), "bind-not-enabled", event.box);
@@ -351,6 +365,7 @@ export function enabledEvents(state: AbstractBoardState, config: BoardModelConfi
   const events: BoardEvent[] = [];
   for (const agent of config.agents) {
     if (guards.register(state, agent)) events.push({ type: "register", agent });
+    if (guards.unregister(state, agent)) events.push({ type: "unregister", agent });
     if (guards.unbind(state, agent)) events.push({ type: "unbind", agent });
     for (const box of config.boxes) {
       if (guards.bind(state, agent, box)) events.push({ type: "bind", agent, box });

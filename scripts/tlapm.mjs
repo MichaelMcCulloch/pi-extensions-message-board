@@ -7,8 +7,8 @@
  * Proves `Spec => []Inv` for EVERY value of `Agents`, `Boxes`, `Messages`,
  * `Posts`, `Topics`, `Cap`, and `MaxClock` -- the parameterized MessageBoard,
  * not only the TLC fixture. `spec/MessageBoardProof.tla` establishes
- * `Init => Inv` and that each of the nine actions preserves each invariant
- * component; `PTL` turns that into `[]Inv` (983 obligations).
+ * `Init => Inv` and that each of the ten actions preserves each invariant
+ * component; `PTL` turns that into `[]Inv` (1013 obligations).
  *
  * The driver locates tlapm from `TLAPM`, then `~/.local/tlapm/bin/tlapm`,
  * then `PATH`, and its stdlib from `TLAPM_LIBRARY`, then the sibling lib

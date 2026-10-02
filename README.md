@@ -121,7 +121,7 @@ pnpm verify:proof     # TLAPS inductive proof (needs tlapm + Z3)
 ### What TLC proves
 
 Over a two-agent, one-mailbox, two-message, two-post board, TLC explores the
-**complete reachable state space — 18,565 distinct states, 98,995 generated**,
+**complete reachable state space — 30,429 distinct states, 175,507 generated**,
 depth 13:
 
 **Safety (`Inv`)**
@@ -157,7 +157,7 @@ The liveness property is unconditional over the protocol under fairness on
 `spec/MessageBoardProof.tla` proves `Spec => []Inv` for **every** `Agents`,
 `Boxes`, `Messages`, `Posts`, `Topics`, `Cap`, and `MaxClock` — not only the TLC
 fixture. TLC checks one small universe exhaustively; TLAPS checks all of them
-inductively, in **983 obligations** (tlapm 1.6.0-pre + Z3 4.16; the Isabelle
+inductively, in **1013 obligations** (tlapm 1.6.0-pre + Z3 4.16; the Isabelle
 backend carries the primed-sequence cases).
 
 The proof is organized as `Init => Inv` plus one preservation case per action.
@@ -170,7 +170,7 @@ ack-era proof is kept under [`spec/archive/`](spec/archive) as history.
 
 1. **The spec is executable.** [`src/formal/model.ts`](src/formal/model.ts)
    transcribes `MessageBoard.tla`; `test/model.spec.ts` explores it exhaustively
-   and asserts the reachable count is **exactly 18,565** — the number TLC
+   and asserts the reachable count is **exactly 30,429** — the number TLC
    reports.
 2. **The engine is the transition relation.** `reduceBoardCommand` applies
    `referenceReduceBoardState`; there is no second implementation to drift.
@@ -188,12 +188,12 @@ ack-era proof is kept under [`spec/archive/`](spec/archive) as history.
 MessageBoard.tla ──TLC──▶ safety + liveness over all reachable states
         │ same relation          │
         ▼                         ▼
-src/formal/model.ts ──exhaustive──▶ 18,565 states (count cross-checked with TLC)
+src/formal/model.ts ──exhaustive──▶ 30,429 states (count cross-checked with TLC)
         │
         ▼
 src/engine/reducer.ts ──▶ traces ──TLC──▶ TraceValidation.tla
 
-MessageBoard.tla ──TLAPS──▶ Spec => []Inv for arbitrary constants (983 obligations)
+MessageBoard.tla ──TLAPS──▶ Spec => []Inv for arbitrary constants (1013 obligations)
 ```
 
 The JVM is a dev/CI tool only (`scripts/tla.mjs` finds Java 11+ and the pinned
