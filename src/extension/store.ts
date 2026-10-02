@@ -39,6 +39,7 @@ export interface PendingDelivery {
   readonly box: string;
   readonly id: string;
   readonly from: string | null;
+  readonly fromBox: string | null;
   readonly body: string;
 }
 
@@ -81,6 +82,25 @@ export class BoardStore {
     this.refresh();
     if (this.#state.registered[agent] === true) return this.#state;
     return this.#apply({ type: "register", agent });
+  }
+
+  /**
+   * Admit a live session: register it, then serve `preferred` (falling back to
+   * the agent identity when that name is taken). Idempotent; an existing
+   * binding is kept, and failing to claim a name never fails the session.
+   */
+  public admit(agent: string, preferred?: string | null): BoardState {
+    this.register(agent);
+    if (this.boundBox(agent) !== null) return this.#state;
+    const candidates = preferred !== undefined && preferred !== null && preferred.trim().length > 0 ? [preferred, agent] : [agent];
+    for (const box of candidates) {
+      try {
+        return this.bind(agent, box);
+      } catch (error) {
+        if (!(error instanceof BoardOperationError)) throw error;
+      }
+    }
+    return this.#state;
   }
 
   /** Bind a name to serve. A name may have at most one serving agent. */
@@ -196,7 +216,8 @@ export class BoardStore {
       if (this.#state.owner[box] !== agent) continue;
       const id = queue[0];
       if (id === undefined) continue;
-      out.push({ box, id, from: this.#state.sender[id] ?? null, body: this.#state.bodies[id] ?? "" });
+      const from = this.#state.sender[id] ?? null;
+      out.push({ box, id, from, fromBox: from === null ? null : this.#state.bound[from] ?? null, body: this.#state.bodies[id] ?? "" });
     }
     return out;
   }

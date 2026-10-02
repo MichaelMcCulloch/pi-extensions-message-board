@@ -39,8 +39,9 @@ or install it as a package: `pi install /home/michael/Development/pi-agent-harne
 
 ### 1. Direct messages: pushed, durable, at-least-once
 
-An agent `bind`s a durable **name** to serve it. `send` addresses a name.
-The recipient's process — the one whose session serves that name — sees the
+A session is registered and serves a durable **name** automatically when it
+starts; `send` addresses a name. The recipient's process — the one whose
+session serves that name — sees the
 queued message on its next poll, **injects it into the agent's context**, and
 only then marks it delivered. There is no `recv` and no `ack`; the recipient
 cannot not see a message that reaches it, and nothing is asked of the model to
@@ -49,8 +50,8 @@ keep the channel moving.
 Three properties matter:
 
 - **Names outlive sessions.** A send to a name with no serving agent is a
-  *durable inbox*: a later session binds the name and the message is pushed to
-  it. The old "a message to an exited agent sits unread" gap is closed.
+  *durable inbox*: a later session can serve the name and the message is pushed
+  to it. The old "a message to an exited agent sits unread" gap is closed.
 - **At-least-once.** A crash between injection and the delivery commit leaves
   the message queued, so it is delivered again — duplicates are possible, loss
   is not. The order is the whole guarantee: **inject first, mark second**.
@@ -221,10 +222,11 @@ process observe the board, never a delivery guarantee. The file is the
 inter-process channel. The 2s poll is the cross-process backstop (the widget
 refreshes immediately on `board:changed` and otherwise polls the file).
 
-On `session_shutdown` the extension best-effort `unbind`s the session's name so
-a later session can serve it. A crash still leaks the binding; stale-owner
-takeover needs a heartbeat and a model-level answer and is a documented
-follow-up.
+On `session_shutdown` the extension best-effort releases the session's served
+name so a later session can take it. Registration is an admission record in the
+verified model — there is no `unregister` transition — so a settled session
+stays in the registry. A crash still leaks the binding; stale-owner takeover
+needs a heartbeat and a model-level answer and is a documented follow-up.
 
 ## Storage
 
@@ -259,8 +261,8 @@ One `board` tool with an `action` discriminator:
 
 | Action | Primitive | Effect |
 |---|---|---|
-| `register` / `whoami` | identity | register the session; read your id and bound name |
-| `bind` / `unbind` | identity | claim/release a named mailbox (exclusive) |
+| `whoami` | identity | read your id and the mailbox this session serves |
+| `unbind` | identity | release the served mailbox (serving is automatic at session start) |
 | `send` | direct | enqueue to a named mailbox (durable even if unbound); optional `ttlMs` deadline |
 | `inbox` | direct | list queued messages without delivering them |
 | `subscribe` / `unsubscribe` | forum | watch / stop watching a topic |

@@ -31,7 +31,7 @@ describe("board store (push delivery)", () => {
     expect(board.pending("a2")).toEqual([]);
     board.bind("a2", "inbox");
     expect(board.pending("a2")).toEqual([
-      { box: "inbox", id: sent.message, from: "a1", body: "durable" },
+      { box: "inbox", id: sent.message, from: "a1", fromBox: null, body: "durable" },
     ]);
     board.deliver("a2", "inbox", sent.message);
     expect(board.state.mstatus[sent.message]).toBe("delivered");
@@ -144,5 +144,28 @@ describe("board store (push delivery)", () => {
     const board = memoryBoard();
     board.register("a1");
     expect(() => board.send("ghost", "inbox", "boo")).toThrow();
+  });
+
+  it("admits a session with its preferred name and falls back to the identity", () => {
+    const board = memoryBoard();
+    board.admit("a1", "coordinator");
+    expect(board.state.registered["a1"]).toBe(true);
+    expect(board.boundBox("a1")).toBe("coordinator");
+    // Idempotent: an already served name is kept.
+    board.admit("a1", "something-else");
+    expect(board.boundBox("a1")).toBe("coordinator");
+    // A taken preferred name falls back to the identity rather than failing.
+    board.admit("a2", "coordinator");
+    expect(board.boundBox("a2")).toBe("a2");
+    board.admit("a3");
+    expect(board.boundBox("a3")).toBe("a3");
+  });
+
+  it("reports the sender's served name with a pushed message", () => {
+    const board = memoryBoard();
+    board.admit("a1", "coordinator");
+    board.admit("a2", "worker");
+    board.send("a1", "worker", "ping");
+    expect(board.pending("a2")[0]).toMatchObject({ from: "a1", fromBox: "coordinator", body: "ping" });
   });
 });

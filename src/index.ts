@@ -41,8 +41,15 @@ export function latestSnapshot(ctx: ExtensionContext): BoardState | null {
   return latest;
 }
 
+/** Host options: how the tools are split and which durable name a session prefers. */
+export interface BoardExtensionOptions {
+  splitTools?: boolean;
+  /** Preferred mailbox name for a session; the session identity is the fallback. */
+  mailboxName?: (ctx: ExtensionContext) => string | null | undefined;
+}
+
 /** Default export consumed by pi. */
-export default function boardExtension(pi: ExtensionAPI, options: { splitTools?: boolean } = {}): void {
+export default function boardExtension(pi: ExtensionAPI, options: BoardExtensionOptions = {}): void {
   let store: BoardStore | null = null;
   let currentCtx: ExtensionContext | null = null;
   let widgetTui: TUI | null = null;
@@ -144,13 +151,18 @@ export default function boardExtension(pi: ExtensionAPI, options: { splitTools?:
   pi.on("session_start", (_event, ctx) => {
     currentCtx = ctx;
     store = openStore(ctx);
+    // Participation is lifecycle, not a model-facing action: every session is
+    // registered and serves a mailbox before any message can be pushed.
+    store.admit(agentOf(ctx), options.mailboxName?.(ctx));
     refreshWidget();
     startPolling();
     startPusher(ctx);
   });
   pi.on("session_tree", (_event, ctx) => {
     currentCtx = ctx;
-    getStore(ctx).refresh();
+    const current = getStore(ctx);
+    current.refresh();
+    current.admit(agentOf(ctx), options.mailboxName?.(ctx));
     refreshWidget();
   });
   pi.on("session_shutdown", (_event, ctx) => {

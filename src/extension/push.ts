@@ -82,10 +82,11 @@ export class BoardPusher {
   #deliverDirect(): void {
     for (const pending of this.#deps.store.pending(this.#deps.agent)) {
       try {
+        const sender = pending.from === null ? "unknown" : pending.fromBox === null ? pending.from : `${pending.fromBox} (${pending.from})`;
         this.#deps.notify({
           kind: "dm",
-          text: `[board] direct message ${pending.id} from ${pending.from ?? "unknown"} (box ${pending.box})\n${pending.body}`,
-          details: { box: pending.box, message: pending.id, from: pending.from },
+          text: `[board] direct message ${pending.id} from ${sender} (box ${pending.box})\n${pending.body}`,
+          details: { box: pending.box, message: pending.id, from: pending.from, fromBox: pending.fromBox },
         });
       } catch (error) {
         // The message can never reach the agent's context, so fail it now and
