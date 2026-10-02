@@ -45,6 +45,24 @@ describe("board tool", () => {
     expect(after.content[0]?.type === "text" && after.content[0].text).toBe("[]");
   });
 
+  it("inspects the served mailbox without an explicit box", async () => {
+    const store = memoryBoard();
+    store.admit("a1", "coordinator");
+    store.admit("a2", "inbox");
+    const call = toolOn(store);
+    await call("a1", { action: "send", box: "inbox", body: "ping" });
+
+    const defaulted = await call("a2", { action: "inbox" });
+    expect(defaulted.structuredContent).toMatchObject({
+      action: "inbox",
+      data: expect.arrayContaining([expect.objectContaining({ preview: "ping" })]),
+    });
+    const explicit = await call("a2", { action: "inbox", box: "inbox" });
+    expect(explicit.content[0]?.type === "text" && explicit.content[0].text).toContain("ping");
+    // A session serving nothing gets a clear refusal instead of a guess.
+    await expect(call("a3", { action: "inbox" })).rejects.toThrow(/board-no-mailbox/);
+  });
+
   it("subscribes and unsubscribes topics", async () => {
     const store = memoryBoard();
     store.register("a1");

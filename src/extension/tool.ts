@@ -31,7 +31,7 @@ export const FORUM_TOOL_ACTIONS = ['whoami', 'subscribe', 'unsubscribe', 'post',
 export const MAILBOX_TOOL_ACTIONS = ['whoami', 'unbind', 'send', 'inbox', 'status'] as const;
 const boardParams = (actions: readonly (typeof BOARD_TOOL_ACTIONS)[number][]) => Type.Object({
   action: StringEnum(actions),
-  box: Type.Optional(Type.String({ description: "Mailbox name to send to or inspect." })),
+  box: Type.Optional(Type.String({ description: "Mailbox name to send to or inspect; inbox defaults to the mailbox this session serves." })),
   body: Type.Optional(Type.String({ description: "Message or post body." })),
   topic: Type.Optional(Type.String({ description: "Forum topic to post in, read, watch, or stop watching." })),
   subject: Type.Optional(Type.String({ description: "Forum post subject." })),
@@ -163,7 +163,9 @@ function runAction(
       return { text: `queued ${result.message} to ${box}; it is pushed when the name is served`, message: result.message };
     }
     case "inbox": {
-      const box = requireParam(params.box, "box", "inbox");
+      // A session serves at most one mailbox, so inspection needs no argument.
+      const box = params.box !== undefined && params.box.length > 0 ? params.box : store.boundBox(agent);
+      if (box === null) throw new BoardOperationError("board-no-mailbox", "inbox requires box when this session serves no mailbox");
       const data=store.inbox(box); return {text:JSON.stringify(data),data};
     }
     case "subscribe": {
